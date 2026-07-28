@@ -212,11 +212,24 @@ Current provider profiles (see each adapter's `manifest.ts` for the source of tr
 | `runCode` (stateful interpreter) | ✅ | — | — | — |
 | `filesystem` | ✅ | ✅ | ✅ | ✅ |
 | `exposePorts` | ✅ | ✅ | ✅ | ✅ |
-| `snapshot` | — | ✅ | ✅ | — |
+| `snapshot` | — | — | — | — |
+| `pauseResume` | — | — | — | — |
 | `gpu` | — | ✅ | — | ✅ |
 | isolation | microvm | gvisor | microvm | gvisor* |
 
 \* Kubernetes isolation depends on the cluster RuntimeClass (gVisor / Kata / Firecracker).
+
+> **`snapshot` and `pauseResume` are `false` on every adapter today, on purpose.**
+> `SandboxAdapter` (in `@osr/core`) has optional `snapshot`/`restore`/`pause`/`resume`
+> hooks, but `SandboxService` doesn't expose any of them to callers yet — there's no
+> gateway route, SDK method, or CLI command that could invoke them even if an adapter
+> implemented them. Modal and Vercel both have real snapshot-like primitives natively
+> (Modal: `snapshotFilesystem`; Vercel: persistent sandboxes with auto-snapshot-on-stop),
+> but until OSR wires them end-to-end, the manifests say `false` rather than let
+> `requiredCapabilities: ["snapshot"]` "succeed" against a capability nothing in the
+> stack can actually deliver — that would be exactly the silent-degradation failure mode
+> the capability model exists to prevent. See the note in the [main README](../README.md)
+> for the current feature-parity gap analysis.
 
 List live manifests at runtime: `await osr.providers()` (or `osr providers` on the CLI).
 
@@ -454,7 +467,7 @@ Flags: `--template`, `--require <cap>` (repeatable), `--prefer <cap>` (repeatabl
 `--order <provider>` (repeatable), `--vcpu`, `--memory`, `--url`, `--tenant`.
 
 ```bash
-OSR_URL=http://localhost:8080 osr plan --require snapshot --strategy cost
+OSR_URL=http://localhost:8080 osr plan --require gpu --strategy cost
 OSR_URL=http://localhost:8080 osr create --template python-3.12 --require runCode
 ```
 
@@ -532,7 +545,9 @@ Errors are structured. In the SDK they arrive as `OsrError` with a `.code`; over
 ```ts
 import { OsrError } from "@osr/core";
 try {
-  await osr.sandboxes.create({ requiredCapabilities: ["gpu", "snapshot"], routing: { isolationFloor: "microvm" } });
+  // No adapter declares `snapshot` today (see §7) — this deterministically fails loud
+  // rather than silently placing you somewhere that can't actually snapshot.
+  await osr.sandboxes.create({ requiredCapabilities: ["snapshot"] });
 } catch (e) {
   if (e instanceof OsrError && e.code === "NoCompliantProvider") {
     console.error("relax a constraint:", e.details);

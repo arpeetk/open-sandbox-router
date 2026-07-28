@@ -84,12 +84,16 @@ async function main(): Promise<void> {
   await service.destroy(sandbox.id);
   console.log(`  destroyed ${sandbox.id}`);
 
-  // 3. Capability negotiation: require snapshot (Modal + Vercel support it; E2B and
-  //    Kubernetes do not, so they are excluded before scoring).
-  banner("3. Require snapshot (E2B and Kubernetes excluded)");
-  const snapPlan = service.planRoute({ requiredCapabilities: ["snapshot"] });
-  console.log(`  candidates: ${snapPlan.candidates.map((c) => c.provider).join(", ") || "(none)"}`);
-  console.log(`  excluded:   ${snapPlan.excluded.map((e) => `${e.provider}(${e.reason})`).join(", ")}`);
+  // 3. Capability negotiation: require gpu (Modal + Kubernetes support it; E2B and
+  //    Vercel do not, so they are excluded before scoring). Note: `snapshot` and
+  //    `pauseResume` are deliberately false on every adapter right now — OSR's
+  //    SandboxAdapter interface has the hooks for them, but SandboxService doesn't yet
+  //    expose pause/snapshot/restore end-to-end for any provider, so no manifest is
+  //    allowed to claim them (see each adapter's manifest.ts for why).
+  banner("3. Require gpu (E2B and Vercel excluded)");
+  const gpuPlan = service.planRoute({ requiredCapabilities: ["gpu"], resources: { gpu: 1 } });
+  console.log(`  candidates: ${gpuPlan.candidates.map((c) => c.provider).join(", ") || "(none)"}`);
+  console.log(`  excluded:   ${gpuPlan.excluded.map((e) => `${e.provider}(${e.reason})`).join(", ")}`);
 
   // 4. Create-time failover: knock out the cheapest provider and watch OSR fail over.
   banner("4. Failover: cheapest provider returns CapacityError");

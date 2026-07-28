@@ -111,6 +111,12 @@ export class VercelSandboxAdapter implements SandboxAdapter {
       timeout: spec.ttlSeconds ? spec.ttlSeconds * 1000 : undefined,
       ports,
       env: spec.env,
+      // Vercel defaults to `persistent: true` (auto-snapshot on stop, auto-resume on
+      // next call). OSR doesn't yet expose pause/resume, so an OSR-created sandbox has
+      // no way back once its handle is gone — defaulting to false avoids leaving an
+      // orphaned, billable, snapshotted sandbox behind if a caller never explicitly
+      // destroys it. Revisit once OSR wires real pause/resume.
+      persistent: false,
       ...authFrom(creds),
     });
 
@@ -130,7 +136,12 @@ export class VercelSandboxAdapter implements SandboxAdapter {
 
   async destroy(ref: string, creds: ProviderCreds): Promise<void> {
     const sandbox = await this.connect(ref, creds);
-    await sandbox.stop();
+    // IMPORTANT: Vercel sandboxes are persistent by default — `stop()` pauses the
+    // sandbox and auto-snapshots it for later resume; it does NOT tear it down. OSR's
+    // `destroy` means "gone for good", so this must call `delete()`, which makes the
+    // sandbox permanently inert. Using `stop()` here would silently leak a resumable,
+    // billable sandbox every time a caller thought they'd destroyed it.
+    await sandbox.delete();
   }
 
   async *exec(ref: string, req: ExecRequest, creds: ProviderCreds): AsyncIterable<ExecEvent> {

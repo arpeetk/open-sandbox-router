@@ -2,8 +2,17 @@ import type { CapabilityManifest } from "@osr/core";
 
 /**
  * Vercel Sandbox capability profile: microVM isolation, active-CPU billing
- * ($0.128/vCPU-hr active + provisioned memory), persistent snapshots, no GPU, exec-based
- * (no stateful code-interpreter session), ports via `sandbox.domain()`.
+ * ($0.128/vCPU-hr active + provisioned memory), no GPU, exec-based (no stateful
+ * code-interpreter session), ports via `sandbox.domain()`.
+ *
+ * Vercel's own sandboxes DO support persistence/snapshot (`persistent: true` +
+ * `stop()`/`Sandbox.get()` auto-resume) and forking from a snapshot — but OSR's
+ * SandboxAdapter has no `snapshot`/`restore`/`pause`/`resume` implementation for this
+ * provider yet, and SandboxService doesn't expose those ops to callers regardless.
+ * `pauseResume`/`snapshot` are kept `false` here so capability negotiation never lets a
+ * caller believe they can request a capability nothing in the stack can actually deliver.
+ * Flip these once real pause/snapshot/restore wiring lands (see @osr/core's
+ * SandboxAdapter for the optional methods to implement).
  */
 export const vercelManifest: CapabilityManifest = {
   provider: "vercel",
@@ -14,8 +23,8 @@ export const vercelManifest: CapabilityManifest = {
     runCode: false,
     filesystem: true,
     exposePorts: true,
-    pauseResume: true,
-    snapshot: true,
+    pauseResume: false,
+    snapshot: false,
     persistentDisk: false,
     gpu: false,
     customImage: true,

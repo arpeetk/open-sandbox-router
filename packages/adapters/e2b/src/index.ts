@@ -7,6 +7,11 @@
  * NOTE: execution is currently backed by the simulated runtime. Replace SimAdapter with
  * calls to `@e2b/sdk` (Sandbox.create / commands.run / files.write / runCode) to make
  * this a production adapter. The manifest and cost model below already match E2B.
+ *
+ * `pauseResume: true` reflects E2B's own pause/resume API, but note that
+ * SandboxService has no pause/resume passthrough for ANY provider yet (see
+ * @osr/core's SandboxAdapter for the optional methods still needed end-to-end) — so
+ * this capability isn't reachable through OSR today regardless of adapter.
  */
 
 import type { CapabilityManifest, SandboxAdapter } from "@osr/core";
