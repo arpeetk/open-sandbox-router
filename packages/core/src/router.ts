@@ -65,22 +65,38 @@ export class Router {
   ): RoutePlan {
     const routing = negotiation.routing ?? {};
 
-    // Pin bypasses scoring entirely (reproducibility / power users).
+    // Capability negotiation and policy guardrails (allow/deny, region, isolationFloor,
+    // resource limits) ALWAYS run first — including for `pin:`. Pinning only decides
+    // ranking among compliant candidates; it must never let a request bypass a
+    // requirement or a policy guardrail. Bypassing negotiation here would mean a caller
+    // could "pin" their way onto a provider that doesn't satisfy what they asked for, or
+    // around an admin's allow/deny policy — exactly the silent-degradation failure mode
+    // capability negotiation exists to prevent.
+    const { candidates: manifests, excluded } = negotiate(this.registry.manifests(), negotiation);
+
     const pin = routing.strategy?.startsWith("pin:") ? routing.strategy.slice(4) : undefined;
     if (pin) {
-      if (!this.registry.has(pin)) {
-        throw new OsrError("NoCompliantProvider", `pinned provider "${pin}" is not registered`);
+      const manifest = manifests.find((m) => m.provider === pin);
+      if (!manifest) {
+        const reason =
+          excluded.find((e) => e.provider === pin)?.reason ??
+          (this.registry.has(pin) ? "excluded by policy" : "not registered");
+        throw new OsrError(
+          "NoCompliantProvider",
+          `pinned provider "${pin}" does not satisfy the request: ${reason}`,
+          { details: { pin, excluded } },
+        );
       }
-      const adapter = this.registry.get(pin);
-      return {
-        candidates: [
-          this.scoreOne(adapter.capabilities(), spec, routing, weightsFor(routing), 0, []),
-        ],
-        excluded: [],
-      };
+      const candidate = this.scoreOne(manifest, spec, routing, weightsFor(routing), 0, []);
+      if (routing.maxCostPerHourUsd !== undefined && candidate.estimatedUsdPerHour > routing.maxCostPerHourUsd) {
+        throw new OsrError(
+          "NoCompliantProvider",
+          `pinned provider "${pin}" exceeds the cost ceiling`,
+          { details: { pin, estimatedUsdPerHour: candidate.estimatedUsdPerHour, maxCostPerHourUsd: routing.maxCostPerHourUsd } },
+        );
+      }
+      return { candidates: [candidate], excluded };
     }
-
-    const { candidates: manifests, excluded } = negotiate(this.registry.manifests(), negotiation);
 
     if (manifests.length === 0) {
       throw new OsrError("NoCompliantProvider", "no provider satisfies the request", {

@@ -162,7 +162,13 @@ All placement control lives under `routing`.
 | `cost` | Cheapest compliant provider (inverse-price weighting) |
 | `latency` | Lowest expected cold-start for the region |
 | `order` | Respect your explicit `order` list; first compliant + healthy wins |
-| `pin:<provider>` | Bypass scoring entirely — always this provider (reproducibility) |
+| `pin:<provider>` | Bypass *ranking* — always this provider, if it's compliant (reproducibility) |
+
+> `pin:` only skips *scoring* — it never skips capability negotiation or guardrails
+> (`allow`/`deny`, `isolationFloor`, `region`, `maxCostPerHourUsd`). Pinning to a provider
+> that doesn't satisfy your `requiredCapabilities` or is excluded by policy still raises
+> `NoCompliantProvider`, exactly like the non-pinned path. Pinning is a ranking override
+> for power users, not an escape hatch around what you asked for.
 
 ### Guardrails (hard constraints)
 

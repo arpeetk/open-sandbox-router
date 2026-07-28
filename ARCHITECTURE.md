@@ -165,6 +165,45 @@ Runs only at create. Pipeline: **filter → score → order → attempt with fai
 4. **Failover:** try candidates in scored order; on a failover-eligible `OsrError`, move
    to the next; exhausting the list yields `AllProvidersFailed`.
 
+`pin:<provider>` only replaces step 2 (scoring) with "just use this one" — it still runs
+through step 1 first. A pin to a provider that fails negotiation (missing capability,
+denied by policy, over budget) throws `NoCompliantProvider` exactly like the unpinned
+path. This was a real bug until it wasn't: an earlier version let `pin:` skip negotiation
+entirely, which meant pinning could silently hand back a sandbox that didn't meet a
+stated requirement, or bypass an admin's `deny` list. Fixed in `Router.plan()` — pin now
+resolves the negotiated candidate set first and selects from within it, or fails loud.
+
+### How each behavior is actually verified
+
+Every strategy and guardrail below has a dedicated assertion, not just a demo that prints
+output for a human to eyeball. Look here first when changing routing behavior:
+
+| Behavior | Verified in |
+|---|---|
+| Capability filtering / `NoCompliantProvider` | `packages/core/src/router.test.ts` — `capability negotiation + routing` |
+| `cost`, `latency`, `order`, `balanced` (default) strategies | same file — `routing strategies` (the `balanced` test asserts it picks a *different* winner than `cost` on the same fixture, proving it isn't just an alias) |
+| `pin:<provider>` — happy path AND still-fails-loud on missing capability / over-budget / denied | same file — `routing strategies` |
+| `allow`, `deny`, `region`, `maxCostPerHourUsd`, `allowFallbacks: false` guardrails | same file — `guardrails` |
+| Create-time failover (retries on `CapacityError`, does NOT retry on `AuthError`) | same file — `create-time failover` |
+| **Session affinity**, in-process | same file — `session affinity`: a sandbox stays bound to its creating provider even after a strictly-better provider registers afterward, proven via a call log shared across fake adapters (every op after `create` is asserted to hit the *same* adapter instance) |
+| **Session affinity**, over real HTTP | `packages/gateway/src/server.test.ts` — two sandboxes pinned to two different providers, requests interleaved, each `GET` must return its own sandbox's original provider |
+| `exec` streaming (SSE) | same file — parses the actual `text/event-stream` body into events and asserts stdout + a terminal exit event |
+| Binding persistence across separate OS processes | `packages/embed/src/file-binding-store.test.ts` — writes with one `FileBindingStore` instance, reads with a fresh one (simulating two separate `osr` CLI invocations) |
+| Real provider behavior (Modal, Vercel) | not unit-tested (would require live credentials in CI); verified manually against production APIs — see `examples/live-providers.ts` and the "Try it live" section of `docs/GUIDE.md` |
+
+Run the whole suite with `pnpm test`. As of this writing that's 31 tests across 3 files;
+`pnpm typecheck` and `pnpm demo` (a scripted walkthrough, not itself a test) round out CI.
+
+**Why session affinity is guaranteed, mechanically:** `Router.plan()` is called from
+exactly one place — `SandboxService.create()`. Every other `SandboxService` method
+(`get`, `exec`, `runCode`, `fsRead`, `fsWrite`, `fsList`, `exposePort`, `destroy`) calls a
+private `resolve(sandboxId)` that reads the persisted `Binding` and looks up
+`registry.get(binding.provider)` — there is no code path in any of those methods that
+touches the `Router`. So it isn't a runtime check that could regress silently; it's
+structural — re-routing an existing sandbox would require deliberately adding a
+`router.plan()` call inside one of those methods, which the test above continuously
+guards against.
+
 ## State & deployment
 
 - **Binding store** is the durable `sandbox → provider` map. `InMemoryBindingStore`
