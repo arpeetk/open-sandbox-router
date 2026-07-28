@@ -510,7 +510,7 @@ osr --version
 | `plan [flags]` | Dry-run routing; prints candidates + exclusions |
 | `create [flags]` | Create a sandbox; prints id, provider, and failover path |
 | `ls` | List sandboxes |
-| `exec <id> -- <cmd...>` | Run a command and stream output |
+| `exec <id> <cmd...>` | Run a command and stream output (`--` only needed if `<cmd>` itself has a `--flag`) |
 | `rm <id>` | Destroy a sandbox |
 | `pause <id>` / `resume <id>` | Pause/resume (provider-dependent) |
 | `snapshot <id>` | Take a provider-native snapshot; prints `<provider>:<snapshotId>` |

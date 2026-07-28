@@ -118,7 +118,7 @@ osr providers                                   # list providers + capabilities
 osr plan --require runCode --strategy cost      # dry-run routing
 osr create --template python-3.12 --require runCode --strategy latency
 osr ls
-osr exec <id> -- echo hello
+osr exec <id> echo hello
 osr --version
 ```
 
@@ -129,7 +129,7 @@ state persists to `~/.osr/bindings.json`, so bindings survive across commands:
 ```bash
 osr --local providers
 osr --local create --require filesystem --strategy cost
-osr --local exec <id> -- echo hi        # a separate process reconnects via the saved binding
+osr --local exec <id> echo hi           # a separate process reconnects via the saved binding
 osr --local rm <id>
 ```
 

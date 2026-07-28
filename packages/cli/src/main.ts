@@ -7,7 +7,8 @@
  *   osr create --template python-3.12 --require runCode
  *   osr create --name my-workspace --template node-20   # get-or-create by stable name
  *   osr ls
- *   osr exec <id> -- python -c "print(1+1)"
+ *   osr exec <id> python -c "print(1+1)"     (no -- needed — "-c" is single-dash)
+ *   osr exec <id> -- node --version          (-- needed: "--version" is a double-dash flag)
  *   osr pause <id>  /  osr resume <id>       (provider-dependent)
  *   osr snapshot <id>                        -> prints "<provider>:<snapshotId>"
  *   osr create --from-snapshot modal:im-abc123   restore a new sandbox from a snapshot
@@ -163,9 +164,15 @@ async function main(): Promise<void> {
     }
     case "exec": {
       const id = _[1];
-      if (!id || rest.length === 0) throw new Error("usage: osr exec <id> -- <cmd> [args...]");
+      // `--` is only required when the command itself needs a `--foo` flag (which would
+      // otherwise be swallowed as an osr flag) — for the common case, anything after the
+      // id is the command, no separator needed: `osr exec <id> ls -la` just works.
+      const cmdArgs = rest.length > 0 ? rest : _.slice(2);
+      if (!id || cmdArgs.length === 0) {
+        throw new Error("usage: osr exec <id> <cmd> [args...]   (or: osr exec <id> -- <cmd> [args...] if <cmd> needs a --flag)");
+      }
       const sbx = await client.sandboxes.get(id);
-      const res = await sbx.run(rest[0]!, rest.slice(1));
+      const res = await sbx.run(cmdArgs[0]!, cmdArgs.slice(1));
       process.stdout.write(res.stdout);
       if (res.stderr) process.stderr.write(res.stderr);
       process.exitCode = res.code;
@@ -211,7 +218,7 @@ async function main(): Promise<void> {
           "  plan     [flags]          dry-run routing",
           "  create   [flags]          create a sandbox",
           "  ls                        list sandboxes",
-          "  exec <id> -- <cmd...>     run a command",
+          "  exec <id> <cmd...>        run a command (add -- before it only if it has a --flag)",
           "  rm <id>                   destroy a sandbox",
           "  pause <id>                pause a sandbox (provider-dependent)",
           "  resume <id>               resume a paused sandbox",
