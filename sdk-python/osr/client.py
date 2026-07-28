@@ -96,6 +96,11 @@ class OSR:
     def list(self) -> List["Sandbox"]:
         return [Sandbox(self, s, []) for s in self._request("GET", "/v1/sandboxes")]
 
+    def restore(self, provider: str, snapshot_id: str, **req: Any) -> "Sandbox":
+        """Create a new sandbox restored from a previous `sandbox.snapshot()`."""
+        req["from_snapshot"] = {"provider": provider, "snapshotId": snapshot_id}
+        return self.create(**req)
+
 
 @dataclass
 class Sandbox:
@@ -145,12 +150,28 @@ class Sandbox:
     def destroy(self) -> None:
         self.client._request("DELETE", f"/v1/sandboxes/{self.id}")
 
+    def pause(self) -> "Sandbox":
+        """Pause the sandbox (provider-dependent — raises OsrError otherwise)."""
+        self.data = self.client._request("POST", f"/v1/sandboxes/{self.id}/pause")
+        return self
+
+    def resume(self) -> "Sandbox":
+        """Resume a paused sandbox."""
+        self.data = self.client._request("POST", f"/v1/sandboxes/{self.id}/resume")
+        return self
+
+    def snapshot(self) -> Dict[str, str]:
+        """Take a provider-native snapshot: {"provider": ..., "snapshotId": ...}."""
+        return self.client._request("POST", f"/v1/sandboxes/{self.id}/snapshot")
+
 
 def _create_body(req: Dict[str, Any]) -> Dict[str, Any]:
     """Map pythonic kwargs to the wire schema."""
     body: Dict[str, Any] = {}
     if "template" in req:
         body["template"] = req["template"]
+    if "name" in req:
+        body["name"] = req["name"]
     if "required" in req:
         body["requiredCapabilities"] = req["required"]
     if "preferred" in req:
@@ -163,4 +184,6 @@ def _create_body(req: Dict[str, Any]) -> Dict[str, Any]:
         body["routing"] = req["routing"]
     if "metadata" in req:
         body["metadata"] = req["metadata"]
+    if "from_snapshot" in req:
+        body["fromSnapshot"] = req["from_snapshot"]
     return body

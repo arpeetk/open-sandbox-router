@@ -41,6 +41,10 @@ export class FileBindingStore implements BindingStore {
     return Object.values(this.read()).find((b) => b.tenant === tenant && b.idempotencyKey === key);
   }
 
+  async findByName(tenant: string, name: string): Promise<Binding | undefined> {
+    return Object.values(this.read()).find((b) => b.tenant === tenant && b.name === name);
+  }
+
   async update(sandboxId: string, patch: Partial<Binding>): Promise<Binding> {
     const map = this.read();
     const cur = map[sandboxId];

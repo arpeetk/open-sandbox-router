@@ -20,7 +20,11 @@ that *same* provider. Three consequences:
    ports, isolation). A create request declares required capabilities; the router filters
    candidates *before* scoring and fails loud rather than silently degrading.
 3. **Failover splits in two.** Create-time failover is cheap and always on. Mid-session
-   failover needs snapshot/migration and is opt-in.
+   failover (moving a *running* sandbox when its provider degrades) has no automatic
+   trigger yet — but the primitive it needs is real: `sbx.snapshot()` +
+   `osr.sandboxes.restore()` genuinely checkpoint and rehydrate state on Modal and Vercel
+   today (see §"Routing engine"). What's still manual is the "degraded, migrate now"
+   decision; a caller can already build that on top by hand.
 
 ## The adapter boundary
 
@@ -94,10 +98,17 @@ SandboxAdapter        the provider contract every adapter implements
 CapabilityManifest    what a provider supports: isolation, features, limits, regions, cost model
 NormalizedSpec        a resolved create spec handed to an adapter (provider + region chosen)
 Sandbox               provider-neutral view returned to callers
-Binding               durable sandboxId -> { provider, providerRef, tenant, ... } record
+Binding               durable sandboxId -> { provider, providerRef, tenant, name?, ... } record
 ExecEvent / CodeEvent normalized streamed output
+SnapshotReference      { provider, snapshotId } — opaque outside the provider that made it
 OsrError              normalized error taxonomy (drives failover decisions)
 ```
+
+`SandboxAdapter`'s `pause`/`resume`/`snapshot`/`restore` are optional — present only when
+a provider genuinely supports them, matching its `CapabilityManifest`. `SandboxService`
+exposes all four (`pause`, `resume`, `snapshot`, plus `create({ fromSnapshot })` for
+restore), each throwing `CapabilityUnsupported` if the bound provider's adapter doesn't
+implement the method — the same pattern already used for `runCode` and `exposePort`.
 
 ## Request lifecycle
 
@@ -173,6 +184,23 @@ entirely, which meant pinning could silently hand back a sandbox that didn't mee
 stated requirement, or bypass an admin's `deny` list. Fixed in `Router.plan()` — pin now
 resolves the negotiated candidate set first and selects from within it, or fails loud.
 
+**`create({ fromSnapshot })` (restore) reuses this exact same mechanism.** Since a
+snapshot only exists on the provider that made it, `SandboxService.create()` forces
+`routing.strategy = "pin:<snapshot's provider>"` and implicitly adds `snapshot` to
+`requiredCapabilities` before calling the router — so restoring is provably no more
+permissive than an explicit pin: it still can't cross a `deny` list, a budget ceiling, or
+land on a provider that doesn't actually support snapshots.
+
+**`create({ name })` (named get-or-create) runs *before* routing, not through it.**
+`SandboxService.create()` checks its own `BindingStore` for a live `(tenant, name)` match
+first; only on a miss does it fall through to the normal filter → score → create path
+(with `name` passed into the adapter, so providers with native named-sandbox support —
+Vercel's `getOrCreate`, Modal's `fromName`-then-create — can still find it even if OSR's
+own binding was lost). A second `create()` call with the same name is provably a no-op at
+the provider level: `packages/core/src/service.test.ts` asserts the fake adapter's
+`create` is invoked exactly once across two `SandboxService.create()` calls with the same
+name.
+
 ### How each behavior is actually verified
 
 Every strategy and guardrail below has a dedicated assertion, not just a demo that prints
@@ -189,9 +217,14 @@ output for a human to eyeball. Look here first when changing routing behavior:
 | **Session affinity**, over real HTTP | `packages/gateway/src/server.test.ts` — two sandboxes pinned to two different providers, requests interleaved, each `GET` must return its own sandbox's original provider |
 | `exec` streaming (SSE) | same file — parses the actual `text/event-stream` body into events and asserts stdout + a terminal exit event |
 | Binding persistence across separate OS processes | `packages/embed/src/file-binding-store.test.ts` — writes with one `FileBindingStore` instance, reads with a fresh one (simulating two separate `osr` CLI invocations) |
-| Real provider behavior (Modal, Vercel) | not unit-tested (would require live credentials in CI); verified manually against production APIs — see `examples/live-providers.ts` and the "Try it live" section of `docs/GUIDE.md` |
+| Named get-or-create reuse (`create({ name })`) | `packages/core/src/service.test.ts` — a second `create()` with the same name returns the same sandbox with **zero** additional provider `create` calls (asserted via a call counter); distinct names/tenants never collide; a live NotFound check re-provisions if the underlying sandbox is gone |
+| Pause / resume | same file — status flips `running` ⇄ `paused` on the returned `Sandbox`; throws `CapabilityUnsupported` on a provider without the capability |
+| Snapshot / restore | same file — files written before `snapshot()` are readable from the **new** sandbox `restore()` produces; `fromSnapshot` still runs through full negotiation (denied by a `deny` list, or naming an unregistered provider, both fail loud) |
+| TTL reaper | same file — `reapExpired()` destroys only bindings past their `expiresAt`, leaves others untouched, and reports per-sandbox failures without one bad destroy blocking the rest |
+| New gateway REST routes (`pause`/`resume`/`snapshot`, named create, `fromSnapshot` restore) | `packages/gateway/src/server.test.ts` — exercised against the simulated Modal/Vercel adapters (whose manifests already declare these features, so the simulator backs them faithfully) |
+| Real provider behavior (Modal, Vercel) | not unit-tested (would require live credentials in CI); verified manually against production APIs, including the full named-reuse + pause/resume + snapshot/restore lifecycle — see `examples/live-providers.ts` and the "Try it live" section of `docs/GUIDE.md` |
 
-Run the whole suite with `pnpm test`. As of this writing that's 31 tests across 3 files;
+Run the whole suite with `pnpm test`. As of this writing that's 46 tests across 4 files;
 `pnpm typecheck` and `pnpm demo` (a scripted walkthrough, not itself a test) round out CI.
 
 **Why session affinity is guaranteed, mechanically:** `Router.plan()` is called from

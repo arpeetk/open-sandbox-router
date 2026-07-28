@@ -19,6 +19,7 @@ import type {
   ProviderCreds,
   ProviderSandbox,
   SandboxAdapter,
+  SnapshotRef,
 } from "@osr/core";
 import { OsrError, type OsrErrorCode } from "@osr/core";
 import { SimulatedRuntime } from "./runtime.js";
@@ -35,6 +36,8 @@ export class SimAdapter implements SandboxAdapter {
   private readonly manifest: CapabilityManifest;
   private readonly runtime: SimulatedRuntime;
   private failCreateWith?: OsrErrorCode;
+  private readonly snapshots = new Map<string, Map<string, Uint8Array>>();
+  private snapshotSeq = 0;
 
   constructor(config: SimAdapterConfig) {
     this.manifest = config.manifest;
@@ -80,7 +83,11 @@ export class SimAdapter implements SandboxAdapter {
     if (!this.runtime.exists(ref)) {
       throw new OsrError("NotFound", `[${this.id}] ${ref} not found`, { provider: this.id });
     }
-    return { providerRef: ref, status: "running", region: this.manifest.regions[0] };
+    return {
+      providerRef: ref,
+      status: this.runtime.isPaused(ref) ? "paused" : "running",
+      region: this.manifest.regions[0],
+    };
   }
 
   async destroy(ref: string, _creds: ProviderCreds): Promise<void> {
@@ -109,5 +116,43 @@ export class SimAdapter implements SandboxAdapter {
       });
     }
     return { port, url: `https://${ref}-${port}.sim.${this.id}.example`, protocol: "https" };
+  }
+
+  async pause(ref: string, _creds: ProviderCreds): Promise<void> {
+    this.requireFeature("pauseResume", "pause");
+    this.runtime.pause(ref);
+  }
+
+  async resume(ref: string, _creds: ProviderCreds): Promise<void> {
+    this.requireFeature("pauseResume", "resume");
+    this.runtime.resume(ref);
+  }
+
+  async snapshot(ref: string, _creds: ProviderCreds): Promise<SnapshotRef> {
+    this.requireFeature("snapshot", "snapshot");
+    const snapshotId = `${this.id}-snap-${++this.snapshotSeq}`;
+    this.snapshots.set(snapshotId, this.runtime.exportFiles(ref));
+    return { provider: this.id, snapshotId };
+  }
+
+  async restore(snap: SnapshotRef, spec: NormalizedSpec, _creds: ProviderCreds): Promise<ProviderSandbox> {
+    this.requireFeature("snapshot", "restore");
+    const files = this.snapshots.get(snap.snapshotId);
+    if (!files) {
+      throw new OsrError("NotFound", `[${this.id}] snapshot ${snap.snapshotId} not found`, { provider: this.id });
+    }
+    const ref = this.runtime.create(files);
+    return {
+      providerRef: ref,
+      status: "running",
+      region: this.manifest.regions[0],
+      expiresAt: spec.ttlSeconds ? new Date(Date.now() + spec.ttlSeconds * 1000).toISOString() : undefined,
+    };
+  }
+
+  private requireFeature(feature: "pauseResume" | "snapshot", op: string): void {
+    if (!this.manifest.features[feature]) {
+      throw new OsrError("CapabilityUnsupported", `${this.id} does not support ${op}`, { provider: this.id });
+    }
   }
 }

@@ -29,6 +29,7 @@ import type {
   ProviderCreds,
   ProviderSandbox,
   SandboxAdapter,
+  SnapshotRef,
 } from "@osr/core";
 import { OsrError } from "@osr/core";
 import { estimateCostFromModel } from "@osr/adapter-sim";
@@ -39,6 +40,37 @@ const IMAGE_MAP: Record<string, string> = {
   "node-20": "node:20-slim",
   base: "debian:12-slim",
 };
+
+function isNotFound(err: unknown): boolean {
+  return (err as { constructor?: { name?: string } })?.constructor?.name === "NotFoundError";
+}
+
+/** Shared sandbox-create params derived from a NormalizedSpec, used by both create() and
+ * restore() (which differ only in the Image they start from). */
+function sandboxParams(spec: NormalizedSpec): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    // Keep the sandbox alive so subsequent exec calls have something to attach to.
+    command: ["sleep", "infinity"],
+  };
+  if (spec.name) params.name = spec.name;
+  if (spec.ttlSeconds) params.timeoutMs = spec.ttlSeconds * 1000;
+  if (spec.resources.vcpu) params.cpu = spec.resources.vcpu;
+  if (spec.resources.memoryMB) params.memoryMiB = spec.resources.memoryMB;
+  if (typeof spec.resources.gpu === "string") params.gpu = spec.resources.gpu;
+  if (Array.isArray(spec.providerOptions?.["ports"])) {
+    params.encryptedPorts = spec.providerOptions!["ports"] as number[];
+  }
+  return params;
+}
+
+function toProviderSandbox(sandbox: any, spec: NormalizedSpec): ProviderSandbox {
+  return {
+    providerRef: sandbox.sandboxId,
+    status: "running",
+    expiresAt: spec.ttlSeconds ? new Date(Date.now() + spec.ttlSeconds * 1000).toISOString() : undefined,
+    raw: { sandboxId: sandbox.sandboxId },
+  };
+}
 
 export interface ModalAdapterConfig {
   appName?: string;
@@ -89,31 +121,26 @@ export class ModalSandboxAdapter implements SandboxAdapter {
   async create(spec: NormalizedSpec, creds: ProviderCreds): Promise<ProviderSandbox> {
     const client = await this.client(creds);
     const app = await client.apps.fromName(this.appName, { createIfMissing: true });
+
+    // Named get-or-create fallback: Modal has no built-in getOrCreate (unlike Vercel), so
+    // this replicates it — try the named lookup first, and only create if it's genuinely
+    // absent. This covers OSR's own binding being lost while the Modal sandbox is alive.
+    if (spec.name) {
+      try {
+        const existing = await client.sandboxes.fromName(this.appName, spec.name);
+        return toProviderSandbox(existing, spec);
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
+    }
+
     const imageRef =
       (typeof spec.providerOptions?.["image"] === "string" && (spec.providerOptions["image"] as string)) ||
       IMAGE_MAP[spec.template ?? "base"] ||
       IMAGE_MAP.base!;
     const image = client.images.fromRegistry(imageRef);
-
-    const params: Record<string, unknown> = {
-      // Keep the sandbox alive so subsequent exec calls have something to attach to.
-      command: ["sleep", "infinity"],
-    };
-    if (spec.ttlSeconds) params.timeoutMs = spec.ttlSeconds * 1000;
-    if (spec.resources.vcpu) params.cpu = spec.resources.vcpu;
-    if (spec.resources.memoryMB) params.memoryMiB = spec.resources.memoryMB;
-    if (typeof spec.resources.gpu === "string") params.gpu = spec.resources.gpu;
-    if (Array.isArray(spec.providerOptions?.["ports"])) {
-      params.encryptedPorts = spec.providerOptions!["ports"] as number[];
-    }
-
-    const sandbox = await client.sandboxes.create(app, image, params);
-    return {
-      providerRef: sandbox.sandboxId,
-      status: "running",
-      expiresAt: spec.ttlSeconds ? new Date(Date.now() + spec.ttlSeconds * 1000).toISOString() : undefined,
-      raw: { sandboxId: sandbox.sandboxId },
-    };
+    const sandbox = await client.sandboxes.create(app, image, sandboxParams(spec));
+    return toProviderSandbox(sandbox, spec);
   }
 
   async get(ref: string, creds: ProviderCreds): Promise<ProviderSandbox> {
@@ -124,6 +151,25 @@ export class ModalSandboxAdapter implements SandboxAdapter {
   async destroy(ref: string, creds: ProviderCreds): Promise<void> {
     const sandbox = await this.connect(ref, creds);
     await sandbox.terminate();
+  }
+
+  // NOTE: no pause()/resume() — Modal's SDK has no such primitive (the manifest's
+  // pauseResume: false is accurate to the vendor API, not a gap in our wiring).
+
+  async snapshot(ref: string, creds: ProviderCreds): Promise<SnapshotRef> {
+    const sandbox = await this.connect(ref, creds);
+    // Modal's snapshot bakes the filesystem into a reusable Image rather than pausing
+    // this exact sandbox — "restore" means creating a NEW sandbox from that image.
+    const image = await sandbox.snapshotFilesystem();
+    return { provider: this.id, snapshotId: image.imageId };
+  }
+
+  async restore(snap: SnapshotRef, spec: NormalizedSpec, creds: ProviderCreds): Promise<ProviderSandbox> {
+    const client = await this.client(creds);
+    const app = await client.apps.fromName(this.appName, { createIfMissing: true });
+    const image = await client.images.fromId(snap.snapshotId);
+    const sandbox = await client.sandboxes.create(app, image, sandboxParams(spec));
+    return toProviderSandbox(sandbox, spec);
   }
 
   async *exec(ref: string, req: ExecRequest, creds: ProviderCreds): AsyncIterable<ExecEvent> {

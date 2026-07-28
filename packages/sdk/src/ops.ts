@@ -19,6 +19,7 @@ import type {
   RoutePlan,
   Sandbox,
   SandboxService,
+  SnapshotReference,
 } from "@osr/core";
 import { OsrError, type OsrErrorCode } from "@osr/core";
 
@@ -55,6 +56,9 @@ export interface OsrOps {
   fsRead(id: string, path: string): Promise<string>;
   fsList(id: string, path: string): Promise<FileEntry[]>;
   exposePort(id: string, port: number): Promise<PortInfo>;
+  pause(id: string): Promise<Sandbox>;
+  resume(id: string): Promise<Sandbox>;
+  snapshot(id: string): Promise<SnapshotReference>;
 }
 
 // ---- HTTP backend ---------------------------------------------------------
@@ -162,6 +166,15 @@ export class HttpOps implements OsrOps {
   exposePort(id: string, port: number): Promise<PortInfo> {
     return this.request("POST", `/v1/sandboxes/${id}/ports`, { port });
   }
+  pause(id: string): Promise<Sandbox> {
+    return this.request("POST", `/v1/sandboxes/${id}/pause`, {});
+  }
+  resume(id: string): Promise<Sandbox> {
+    return this.request("POST", `/v1/sandboxes/${id}/resume`, {});
+  }
+  snapshot(id: string): Promise<SnapshotReference> {
+    return this.request("POST", `/v1/sandboxes/${id}/snapshot`, {});
+  }
 }
 
 // ---- Local (in-process) backend ------------------------------------------
@@ -218,6 +231,15 @@ export class LocalOps implements OsrOps {
   }
   exposePort(id: string, port: number): Promise<PortInfo> {
     return this.service.exposePort(id, port);
+  }
+  pause(id: string): Promise<Sandbox> {
+    return this.service.pause(id);
+  }
+  resume(id: string): Promise<Sandbox> {
+    return this.service.resume(id);
+  }
+  snapshot(id: string): Promise<SnapshotReference> {
+    return this.service.snapshot(id);
   }
 }
 

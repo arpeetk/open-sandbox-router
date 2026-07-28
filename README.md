@@ -150,6 +150,15 @@ During development you can also run it without installing: `pnpm cli -- provider
   provider via a durable binding.
 - **Unified ops** — `exec` and `runCode` (SSE-streamed), filesystem read/write/list,
   port exposure, lifecycle.
+- **Named, reusable sandboxes** — `create({ name })` is get-or-create: a second call with
+  the same name reconnects instead of re-provisioning, with a live check that
+  re-creates if the underlying sandbox is actually gone.
+- **Pause / resume / snapshot / restore** — capability-gated (`CapabilityUnsupported`
+  otherwise), genuinely wired end-to-end on Vercel (pause/resume/snapshot/restore) and
+  Modal (snapshot/restore only — Modal's SDK has no pause/resume primitive). `restore`
+  is routed like an explicit pin, so it still can't cross a `deny` list or budget ceiling.
+- **TTL enforcement** — a reaper actually destroys sandboxes past their `ttlSeconds`
+  (`OSR_REAP_INTERVAL_MS`), not just stores the deadline.
 - **Self-hosted Kubernetes adapter** — Pod-per-sandbox with a real `@kubernetes/client-node`
   path and a simulated path so it runs without a cluster.
 

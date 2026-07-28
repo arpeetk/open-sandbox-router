@@ -23,7 +23,9 @@ import type {
   FileEntry,
   PortInfo,
   ProviderSandbox,
+  RoutingPreferences,
   Sandbox,
+  SnapshotReference,
 } from "./types.js";
 
 /** Resolves scoped provider credentials for a given tenant + provider (BYOK). */
@@ -111,28 +113,64 @@ export class SandboxService {
       if (existing) return { sandbox: toSandbox(existing), attempts: [] };
     }
 
+    // Named get-or-create: reuse a live binding for (tenant, name) instead of
+    // provisioning again. A NotFound on the live check means the underlying sandbox is
+    // gone (e.g. the provider reaped it) — fall through and create fresh below, first
+    // clearing the stale name mapping so it doesn't collide with the new binding.
+    if (req.name) {
+      const existing = await this.bindings.findByName(ctx.tenant, req.name);
+      if (existing) {
+        const adapter = this.registry.get(existing.provider);
+        const creds = await this.credentials.credentialsFor(ctx.tenant, existing.provider);
+        try {
+          const ps = await adapter.get(existing.providerRef, creds);
+          const updated = await this.bindings.update(existing.sandboxId, {
+            status: ps.status,
+            expiresAt: ps.expiresAt ?? existing.expiresAt,
+          });
+          return { sandbox: toSandbox(updated), attempts: [] };
+        } catch (err) {
+          if (!(isOsrError(err) && err.code === "NotFound")) throw err;
+          await this.bindings.delete(existing.sandboxId);
+        }
+      }
+    }
+
+    // Restoring from a snapshot is pinned to the snapshot's own provider — reusing the
+    // (already-validated) pin path means this can never bypass capability negotiation or
+    // policy guardrails, same as any other pin. The provider must also actually declare
+    // `snapshot` support, so that's folded into required capabilities here too.
+    const requiredCapabilities = [...(req.requiredCapabilities ?? [])];
+    if (req.fromSnapshot && !requiredCapabilities.includes("snapshot")) {
+      requiredCapabilities.push("snapshot");
+    }
+    const routing: RoutingPreferences = req.fromSnapshot
+      ? { ...req.routing, strategy: `pin:${req.fromSnapshot.provider}` }
+      : (req.routing ?? {});
+
     const spec: NormalizedSpec = {
       template: req.template,
       resources: req.resources ?? {},
       ttlSeconds: req.ttlSeconds,
       env: req.env,
-      region: req.routing?.region,
+      region: routing.region,
+      name: req.name,
       providerOptions: undefined,
     };
 
     const plan = this.router.plan(
       {
-        requiredCapabilities: req.requiredCapabilities ?? [],
+        requiredCapabilities,
         preferredCapabilities: req.preferredCapabilities,
         resources: req.resources,
         template: req.template,
         ttlSeconds: req.ttlSeconds,
-        routing: req.routing,
+        routing,
       },
       spec,
     );
 
-    const allowFallbacks = req.routing?.allowFallbacks ?? true;
+    const allowFallbacks = routing.allowFallbacks ?? true;
     const attempts: { provider: string; error?: string }[] = [];
 
     for (const candidate of plan.candidates) {
@@ -144,13 +182,25 @@ export class SandboxService {
       };
       const started = Date.now();
       try {
-        const ps = await adapter.create(providerSpec, creds);
+        let ps: ProviderSandbox;
+        if (req.fromSnapshot) {
+          if (!adapter.restore) {
+            throw new OsrError(
+              "CapabilityUnsupported",
+              `provider "${candidate.provider}" cannot restore from a snapshot`,
+              { provider: candidate.provider },
+            );
+          }
+          ps = await adapter.restore(req.fromSnapshot, providerSpec, creds);
+        } else {
+          ps = await adapter.create(providerSpec, creds);
+        }
         this.registry.recordOutcome(candidate.provider, true);
         this.meter?.record({
           sandboxId: ps.providerRef,
           tenant: ctx.tenant,
           provider: candidate.provider,
-          op: "create",
+          op: req.fromSnapshot ? "restore" : "create",
           durationMs: Date.now() - started,
           estUsdPerHour: candidate.estimatedUsdPerHour,
           ok: true,
@@ -168,7 +218,7 @@ export class SandboxService {
           sandboxId: "-",
           tenant: ctx.tenant,
           provider: candidate.provider,
-          op: "create",
+          op: req.fromSnapshot ? "restore" : "create",
           durationMs: Date.now() - started,
           ok: false,
         });
@@ -261,6 +311,65 @@ export class SandboxService {
     return info;
   }
 
+  // ---- advanced lifecycle (capability-gated) -------------------------------
+
+  async pause(sandboxId: string): Promise<Sandbox> {
+    const { binding, adapter, creds } = await this.resolve(sandboxId);
+    if (!adapter.pause) {
+      throw new OsrError("CapabilityUnsupported", `provider "${binding.provider}" does not support pause`, {
+        provider: binding.provider,
+      });
+    }
+    await adapter.pause(binding.providerRef, creds);
+    const updated = await this.bindings.update(sandboxId, { status: "paused" });
+    return toSandbox(updated);
+  }
+
+  async resume(sandboxId: string): Promise<Sandbox> {
+    const { binding, adapter, creds } = await this.resolve(sandboxId);
+    if (!adapter.resume) {
+      throw new OsrError("CapabilityUnsupported", `provider "${binding.provider}" does not support resume`, {
+        provider: binding.provider,
+      });
+    }
+    await adapter.resume(binding.providerRef, creds);
+    const updated = await this.bindings.update(sandboxId, { status: "running" });
+    return toSandbox(updated);
+  }
+
+  async snapshot(sandboxId: string): Promise<SnapshotReference> {
+    const { binding, adapter, creds } = await this.resolve(sandboxId);
+    if (!adapter.snapshot) {
+      throw new OsrError("CapabilityUnsupported", `provider "${binding.provider}" does not support snapshot`, {
+        provider: binding.provider,
+      });
+    }
+    const snap = await adapter.snapshot(binding.providerRef, creds);
+    return { provider: snap.provider, snapshotId: snap.snapshotId };
+  }
+
+  // ---- TTL enforcement -------------------------------------------------------
+
+  /**
+   * Destroy every binding whose TTL has elapsed. Call this on a schedule (the gateway
+   * wires a periodic interval; library/CLI users can call it themselves). Best-effort:
+   * one sandbox's destroy failure doesn't stop the others from being reaped.
+   */
+  async reapExpired(now?: Date): Promise<{ destroyed: string[]; failed: { sandboxId: string; error: string }[] }> {
+    const expired = await this.bindings.expired(now);
+    const destroyed: string[] = [];
+    const failed: { sandboxId: string; error: string }[] = [];
+    for (const binding of expired) {
+      try {
+        await this.destroy(binding.sandboxId);
+        destroyed.push(binding.sandboxId);
+      } catch (err) {
+        failed.push({ sandboxId: binding.sandboxId, error: (err as Error).message });
+      }
+    }
+    return { destroyed, failed };
+  }
+
   // ---- internal ------------------------------------------------------------
 
   private bindingFrom(
@@ -286,6 +395,7 @@ export class SandboxService {
       lastActiveAt: now,
       expiresAt: ps.expiresAt,
       idempotencyKey: req.idempotencyKey,
+      name: req.name,
     };
   }
 }

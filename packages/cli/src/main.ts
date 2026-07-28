@@ -1,11 +1,16 @@
 /**
- * `osr` — a thin CLI over the OSR gateway. Talks to the same REST API the SDK uses.
+ * `osr` — a thin CLI over the OSR gateway (or embedded in-process via --local). Talks to
+ * the same REST API the SDK uses.
  *
  *   osr providers                            list registered providers + capabilities
  *   osr plan --require runCode --strategy cost   dry-run routing for a create request
  *   osr create --template python-3.12 --require runCode
+ *   osr create --name my-workspace --template node-20   # get-or-create by stable name
  *   osr ls
  *   osr exec <id> -- python -c "print(1+1)"
+ *   osr pause <id>  /  osr resume <id>       (provider-dependent)
+ *   osr snapshot <id>                        -> prints "<provider>:<snapshotId>"
+ *   osr create --from-snapshot modal:im-abc123   restore a new sandbox from a snapshot
  *   osr rm <id>
  */
 
@@ -72,8 +77,18 @@ function buildCreateRequest(flags: Parsed["flags"]): CreateSandboxRequest {
   const order = asArray(flags.order);
   if (order.length) routing.order = order;
 
+  let fromSnapshot: CreateSandboxRequest["fromSnapshot"];
+  if (typeof flags["from-snapshot"] === "string") {
+    const [provider, snapshotId] = flags["from-snapshot"].split(":");
+    if (!provider || !snapshotId) {
+      throw new Error(`--from-snapshot expects "<provider>:<snapshotId>", got "${flags["from-snapshot"]}"`);
+    }
+    fromSnapshot = { provider, snapshotId };
+  }
+
   return {
     template: typeof flags.template === "string" ? flags.template : undefined,
+    name: typeof flags.name === "string" ? flags.name : undefined,
     requiredCapabilities: asArray(flags.require) as CapabilityName[],
     preferredCapabilities: asArray(flags.prefer) as CapabilityName[],
     resources: {
@@ -81,6 +96,7 @@ function buildCreateRequest(flags: Parsed["flags"]): CreateSandboxRequest {
       memoryMB: flags.memory ? Number(flags.memory) : undefined,
     },
     routing,
+    fromSnapshot,
   };
 }
 
@@ -162,6 +178,31 @@ async function main(): Promise<void> {
       console.log(`destroyed ${id}`);
       break;
     }
+    case "pause": {
+      const id = _[1];
+      if (!id) throw new Error("usage: osr pause <id>");
+      const sbx = await client.sandboxes.get(id);
+      const updated = await sbx.pause();
+      console.log(`paused ${id} (status: ${updated.status})`);
+      break;
+    }
+    case "resume": {
+      const id = _[1];
+      if (!id) throw new Error("usage: osr resume <id>");
+      const sbx = await client.sandboxes.get(id);
+      const updated = await sbx.resume();
+      console.log(`resumed ${id} (status: ${updated.status})`);
+      break;
+    }
+    case "snapshot": {
+      const id = _[1];
+      if (!id) throw new Error("usage: osr snapshot <id>");
+      const sbx = await client.sandboxes.get(id);
+      const snap = await sbx.snapshot();
+      console.log(`${snap.provider}:${snap.snapshotId}`);
+      console.log(`restore with: osr create --from-snapshot ${snap.provider}:${snap.snapshotId}`);
+      break;
+    }
     default:
       console.log(
         [
@@ -172,12 +213,16 @@ async function main(): Promise<void> {
           "  ls                        list sandboxes",
           "  exec <id> -- <cmd...>     run a command",
           "  rm <id>                   destroy a sandbox",
+          "  pause <id>                pause a sandbox (provider-dependent)",
+          "  resume <id>               resume a paused sandbox",
+          "  snapshot <id>             take a provider-native snapshot",
           "",
           "modes:  default talks to a gateway (OSR_URL); --local embeds the router",
           "        in-process (no gateway) and persists state to ~/.osr/bindings.json",
           "",
-          "flags: --local --template --require <cap> --prefer <cap> --strategy <s> --region <r>",
-          "       --isolation <lvl> --max-cost <usd> --order <p> --vcpu --memory --url --tenant",
+          "flags: --local --template --name <n> --require <cap> --prefer <cap> --strategy <s>",
+          "       --region <r> --isolation <lvl> --max-cost <usd> --order <p> --vcpu --memory",
+          "       --from-snapshot <provider>:<id> --url --tenant",
         ].join("\n"),
       );
   }

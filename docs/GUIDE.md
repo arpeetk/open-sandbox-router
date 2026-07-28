@@ -16,7 +16,9 @@ your code ever hard-coding a provider.
 5. [Creating sandboxes](#5-creating-sandboxes)
 6. [Controlling routing](#6-controlling-routing)
 7. [Capabilities & negotiation](#7-capabilities--negotiation)
+   - [7.5 Named, reusable sandboxes](#75-named-reusable-sandboxes)
 8. [Running work on a sandbox](#8-running-work-on-a-sandbox)
+   - [Pause, resume, snapshot & restore](#pause-resume-snapshot--restore-provider-dependent)
 9. [Failover](#9-failover)
 10. [Providers & credentials (simulated vs live)](#10-providers--credentials-simulated-vs-live)
 11. [CLI reference](#11-cli-reference)
@@ -218,24 +220,36 @@ Current provider profiles (see each adapter's `manifest.ts` for the source of tr
 | `runCode` (stateful interpreter) | ✅ | — | — | — |
 | `filesystem` | ✅ | ✅ | ✅ | ✅ |
 | `exposePorts` | ✅ | ✅ | ✅ | ✅ |
-| `snapshot` | — | — | — | — |
-| `pauseResume` | — | — | — | — |
+| `snapshot` | — | ✅ | ✅ | — |
+| `pauseResume` | ✅* | — | ✅ | — |
 | `gpu` | — | ✅ | — | ✅ |
-| isolation | microvm | gvisor | microvm | gvisor* |
+| isolation | microvm | gvisor | microvm | gvisor** |
 
-\* Kubernetes isolation depends on the cluster RuntimeClass (gVisor / Kata / Firecracker).
+\* E2B is still simulated end-to-end (see `@osr/adapter-e2b`'s TODO) — pause/resume work
+against the simulator, not E2B's live API yet.
+\*\* Kubernetes isolation depends on the cluster RuntimeClass (gVisor / Kata / Firecracker).
 
-> **`snapshot` and `pauseResume` are `false` on every adapter today, on purpose.**
-> `SandboxAdapter` (in `@osr/core`) has optional `snapshot`/`restore`/`pause`/`resume`
-> hooks, but `SandboxService` doesn't expose any of them to callers yet — there's no
-> gateway route, SDK method, or CLI command that could invoke them even if an adapter
-> implemented them. Modal and Vercel both have real snapshot-like primitives natively
-> (Modal: `snapshotFilesystem`; Vercel: persistent sandboxes with auto-snapshot-on-stop),
-> but until OSR wires them end-to-end, the manifests say `false` rather than let
-> `requiredCapabilities: ["snapshot"]` "succeed" against a capability nothing in the
-> stack can actually deliver — that would be exactly the silent-degradation failure mode
-> the capability model exists to prevent. See the note in the [main README](../README.md)
-> for the current feature-parity gap analysis.
+Every `true` above is genuinely reachable end-to-end — `SandboxService` exposes
+`pause`/`resume`/`snapshot`, the gateway has REST routes for them, and both TS/Python
+SDKs and the CLI expose them. Modal has no pause/resume primitive at all (only
+`snapshotFilesystem`, i.e. baking the filesystem into a reusable Image), so `pauseResume`
+stays honestly `false` there — see §8 below.
+
+## 7.5 Named, reusable sandboxes
+
+Pass `name` at create time for get-or-create semantics: if a live binding already exists
+for `(tenant, name)`, it's returned as-is with no new provisioning.
+
+```ts
+const sbx = await osr.sandboxes.create({ name: "my-agent-workspace", template: "python-3.12" });
+// ...later, from anywhere, same tenant...
+const same = await osr.sandboxes.create({ name: "my-agent-workspace" }); // same sandbox, no-op
+```
+
+Where the provider has its own native named-sandbox support, the name is passed through
+too (Vercel: `Sandbox.getOrCreate`; Modal: `sandboxes.fromName` with a create-on-not-found
+fallback), so the sandbox is still reachable by name even if OSR's own binding store is
+ever lost — defense in depth, not just an OSR-side cache.
 
 List live manifests at runtime: `await osr.providers()` (or `osr providers` on the CLI).
 
@@ -299,6 +313,37 @@ const s = await osr.sandboxes.get(id);   // reconnect to an existing sandbox
 await osr.sandboxes.list();              // all sandboxes for the tenant
 await sbx.destroy();                     // tear down
 ```
+
+`ttlSeconds` at create time is enforced by a reaper, not just stored — see §10's
+`OSR_REAP_INTERVAL_MS`. Library/CLI users driving `SandboxService` directly can call
+`service.reapExpired()` themselves on whatever schedule they like.
+
+### Pause, resume, snapshot & restore (provider-dependent)
+
+These require the provider to actually support them — check §7's table, or require the
+capability at create time so negotiation guarantees it (`requiredCapabilities: ["snapshot"]`).
+Calling one of these against an unsupported provider throws `CapabilityUnsupported`.
+
+```ts
+await sbx.pause();                 // e.g. Vercel: stop() — snapshots + pauses
+await sbx.resume();                // e.g. Vercel: Sandbox.get({ resume: true })
+
+const snap = await sbx.snapshot();  // { provider, snapshotId } — opaque outside that provider
+const clone = await osr.sandboxes.restore(snap, { requiredCapabilities: ["filesystem"] });
+// `clone` is a genuinely NEW sandbox (new id) seeded from the snapshot's state.
+```
+
+`restore` is routed like `pin:<snapshot's provider>` — it still runs through full
+capability negotiation and policy guardrails (allow/deny, budget), so a snapshot on a
+provider your policy denies still fails loud with `NoCompliantProvider`, exactly like an
+explicit pin would.
+
+Snapshot semantics differ by provider — plan around the one you're on:
+- **Vercel**: `pause` truly pauses *this* sandbox (auto-snapshot on stop); `restore`
+  creates a new sandbox from that snapshot via `source: { type: "snapshot" }`.
+- **Modal**: no pause/resume at all (`pauseResume: false` is accurate to the vendor,
+  not a gap). `snapshot` bakes the filesystem into a reusable Image; `restore` always
+  creates a brand-new sandbox from that image — there's no "this exact sandbox, paused."
 
 ## 9. Failover
 
@@ -467,10 +512,21 @@ osr --version
 | `ls` | List sandboxes |
 | `exec <id> -- <cmd...>` | Run a command and stream output |
 | `rm <id>` | Destroy a sandbox |
+| `pause <id>` / `resume <id>` | Pause/resume (provider-dependent) |
+| `snapshot <id>` | Take a provider-native snapshot; prints `<provider>:<snapshotId>` |
 
-Flags: `--template`, `--require <cap>` (repeatable), `--prefer <cap>` (repeatable),
-`--strategy <s>`, `--region <r>`, `--isolation <lvl>`, `--max-cost <usd>`,
-`--order <provider>` (repeatable), `--vcpu`, `--memory`, `--url`, `--tenant`.
+Flags: `--template`, `--name <n>` (get-or-create by stable name), `--require <cap>`
+(repeatable), `--prefer <cap>` (repeatable), `--strategy <s>`, `--region <r>`,
+`--isolation <lvl>`, `--max-cost <usd>`, `--order <provider>` (repeatable), `--vcpu`,
+`--memory`, `--from-snapshot <provider>:<snapshotId>` (restore), `--url`, `--tenant`.
+
+```bash
+osr create --name my-workspace --template node-20   # get-or-create; safe to run repeatedly
+osr snapshot <id>                                    # -> "modal:im-01K..."
+osr create --from-snapshot modal:im-01K...           # restore into a new sandbox
+osr pause <id>   # provider-dependent; throws CapabilityUnsupported otherwise
+osr resume <id>
+```
 
 ```bash
 OSR_URL=http://localhost:8080 osr plan --require gpu --strategy cost
@@ -551,9 +607,10 @@ Errors are structured. In the SDK they arrive as `OsrError` with a `.code`; over
 ```ts
 import { OsrError } from "@osr/core";
 try {
-  // No adapter declares `snapshot` today (see §7) — this deterministically fails loud
-  // rather than silently placing you somewhere that can't actually snapshot.
-  await osr.sandboxes.create({ requiredCapabilities: ["snapshot"] });
+  // No single provider currently offers BOTH runCode (E2B-only) and gpu (Modal/K8s-only)
+  // — this deterministically fails loud rather than silently placing you somewhere that
+  // can't actually satisfy one of the two.
+  await osr.sandboxes.create({ requiredCapabilities: ["runCode", "gpu"], resources: { gpu: 1 } });
 } catch (e) {
   if (e instanceof OsrError && e.code === "NoCompliantProvider") {
     console.error("relax a constraint:", e.details);
@@ -574,8 +631,11 @@ Gateway environment variables:
 | `OSR_K8S_REAL` | unset | `1` → real cluster client |
 | `OSR_K8S_NAMESPACE` | `osr-sandboxes` | Namespace for sandbox Pods |
 | `OSR_<PROVIDER>_<KEY>` | — | BYOK provider secrets (see [§10](#10-providers--credentials-simulated-vs-live)) |
+| `OSR_REAP_INTERVAL_MS` | `60000` | How often the TTL reaper sweeps for expired sandboxes; `0` disables it |
 | `OSR_URL` | `http://localhost:8080` | Base URL used by the CLI |
 | `OSR_TENANT` | `default` | Tenant used by the CLI |
+| `OSR_LOCAL` | unset | `1` makes the CLI default to `--local` mode |
+| `OSR_STATE_DIR` | `~/.osr` | Where `--local` mode persists its binding store |
 
 ## 16. Recipes
 
@@ -607,4 +667,21 @@ routing: { strategy: "order", order: ["e2b", "modal"], allowFallbacks: true }
 **Idempotent create** (safe to retry):
 ```ts
 await osr.sandboxes.create({ requiredCapabilities: ["filesystem"], idempotencyKey: "job-42" });
+```
+
+**Long-lived, reusable workspace** (get-or-create by name):
+```ts
+const sbx = await osr.sandboxes.create({ name: "agent-42-workspace", template: "python-3.12" });
+// safe to call again later, from anywhere — reconnects instead of re-provisioning
+```
+
+**Checkpoint before a risky step, roll back on failure:**
+```ts
+const snap = await sbx.snapshot();
+try {
+  await sbx.run("python", ["risky_migration.py"]);
+} catch {
+  const clone = await osr.sandboxes.restore(snap, { requiredCapabilities: ["filesystem"] });
+  // continue from `clone`, which has the pre-risky-step state
+}
 ```

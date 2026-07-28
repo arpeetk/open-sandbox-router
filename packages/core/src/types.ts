@@ -67,6 +67,13 @@ export interface RoutingPreferences {
   allowFallbacks?: boolean;
 }
 
+/** A reference to a provider-native snapshot, returned by `snapshot()` and consumed by
+ * `create({ fromSnapshot })` to restore it. Opaque outside the provider that made it. */
+export interface SnapshotReference {
+  provider: string;
+  snapshotId: string;
+}
+
 export interface CreateSandboxRequest {
   /** Portable template/image reference (see template registry). */
   template?: string;
@@ -83,6 +90,22 @@ export interface CreateSandboxRequest {
   metadata?: Record<string, string>;
   /** Idempotency key to dedupe retried create calls. */
   idempotencyKey?: string;
+  /**
+   * Stable, caller-chosen name for get-or-create reuse. If a live binding already exists
+   * for (tenant, name), it's returned as-is with no new provisioning. Otherwise a new
+   * sandbox is created and, where the provider supports native named sandboxes (e.g.
+   * Vercel), the name is passed through so it's still reachable if OSR's own binding is
+   * ever lost.
+   */
+  name?: string;
+  /**
+   * Restore a sandbox from a previously taken snapshot (see `SnapshotReference`). When
+   * set, the router is bypassed in favor of the snapshot's own provider — but capability
+   * negotiation and policy guardrails still apply, exactly like `routing.strategy:
+   * "pin:<provider>"`; a snapshot on a provider that fails your requirements still throws
+   * NoCompliantProvider.
+   */
+  fromSnapshot?: SnapshotReference;
 }
 
 /** The provider-neutral view of a sandbox returned to callers. */

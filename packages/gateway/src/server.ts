@@ -110,6 +110,21 @@ export function buildServer(ctx: AppContext = buildContext()): FastifyInstance {
     return service.exposePort(id, port);
   });
 
+  app.post("/v1/sandboxes/:id/pause", async (req) => {
+    const { id } = req.params as { id: string };
+    return service.pause(id);
+  });
+
+  app.post("/v1/sandboxes/:id/resume", async (req) => {
+    const { id } = req.params as { id: string };
+    return service.resume(id);
+  });
+
+  app.post("/v1/sandboxes/:id/snapshot", async (req) => {
+    const { id } = req.params as { id: string };
+    return service.snapshot(id);
+  });
+
   // Usage / metering summary.
   app.get("/v1/usage", async () => ({ summary: meter.summary(), records: meter.all() }));
 

@@ -19,6 +19,7 @@ import type {
   PortInfo,
   ProviderSandbox,
   ResourceSpec,
+  SnapshotReference,
 } from "./types.js";
 
 /** Scoped provider credentials handed to an adapter per call (never logged). */
@@ -34,6 +35,10 @@ export interface NormalizedSpec {
   env?: Record<string, string>;
   region?: string;
   providerOptions?: Record<string, unknown>;
+  /** Caller-chosen stable name, passed through for providers with native named-sandbox
+   * support (e.g. Vercel's getOrCreate, Modal's fromName) so reuse survives even if
+   * OSR's own binding is lost. */
+  name?: string;
 }
 
 export interface FsOps {
@@ -43,10 +48,9 @@ export interface FsOps {
   remove(ref: string, path: string, creds: ProviderCreds): Promise<void>;
 }
 
-export interface SnapshotRef {
-  provider: string;
-  snapshotId: string;
-}
+/** Alias kept for the adapter contract's established name; canonical shape lives in
+ * types.ts as `SnapshotReference` (also used by `CreateSandboxRequest.fromSnapshot`). */
+export type SnapshotRef = SnapshotReference;
 
 export interface TemplateSpec {
   name: string;

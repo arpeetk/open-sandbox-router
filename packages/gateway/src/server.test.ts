@@ -130,4 +130,95 @@ describe("gateway REST API", () => {
     await app.inject({ method: "DELETE", url: `/v1/sandboxes/${a.id}` });
     await app.inject({ method: "DELETE", url: `/v1/sandboxes/${b.id}` });
   });
+
+  it("pauses and resumes a sandbox on a provider that supports it (vercel)", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], routing: { strategy: "pin:vercel" } },
+    });
+    const { sandbox } = create.json() as { sandbox: { id: string } };
+
+    const pause = await app.inject({ method: "POST", url: `/v1/sandboxes/${sandbox.id}/pause` });
+    expect(pause.statusCode).toBe(200);
+    expect((pause.json() as { status: string }).status).toBe("paused");
+
+    const resume = await app.inject({ method: "POST", url: `/v1/sandboxes/${sandbox.id}/resume` });
+    expect(resume.statusCode).toBe(200);
+    expect((resume.json() as { status: string }).status).toBe("running");
+
+    await app.inject({ method: "DELETE", url: `/v1/sandboxes/${sandbox.id}` });
+  });
+
+  it("returns CapabilityUnsupported pausing a provider without pause/resume (kubernetes)", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], routing: { strategy: "pin:kubernetes" } },
+    });
+    const { sandbox } = create.json() as { sandbox: { id: string } };
+
+    const pause = await app.inject({ method: "POST", url: `/v1/sandboxes/${sandbox.id}/pause` });
+    expect(pause.statusCode).toBe(422);
+    expect((pause.json() as { error: { code: string } }).error.code).toBe("CapabilityUnsupported");
+
+    await app.inject({ method: "DELETE", url: `/v1/sandboxes/${sandbox.id}` });
+  });
+
+  it("snapshots a sandbox and restores a NEW one with the same files (modal)", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], routing: { strategy: "pin:modal" } },
+    });
+    const { sandbox } = create.json() as { sandbox: { id: string } };
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/sandboxes/${sandbox.id}/fs/write`,
+      payload: { path: "/work/snap.txt", content: "before snapshot" },
+    });
+
+    const snap = await app.inject({ method: "POST", url: `/v1/sandboxes/${sandbox.id}/snapshot` });
+    expect(snap.statusCode).toBe(200);
+    const snapshot = snap.json() as { provider: string; snapshotId: string };
+    expect(snapshot.provider).toBe("modal");
+
+    const restore = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], fromSnapshot: snapshot },
+    });
+    expect(restore.statusCode).toBe(201);
+    const restored = (restore.json() as { sandbox: { id: string; provider: string } }).sandbox;
+    expect(restored.id).not.toBe(sandbox.id);
+    expect(restored.provider).toBe("modal");
+
+    const read = await app.inject({
+      method: "GET",
+      url: `/v1/sandboxes/${restored.id}/fs/read?path=/work/snap.txt`,
+    });
+    expect((read.json() as { content: string }).content).toBe("before snapshot");
+
+    await app.inject({ method: "DELETE", url: `/v1/sandboxes/${sandbox.id}` });
+    await app.inject({ method: "DELETE", url: `/v1/sandboxes/${restored.id}` });
+  });
+
+  it("get-or-create by name reuses the same sandbox across separate requests", async () => {
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], name: "gw-named-test" },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], name: "gw-named-test" },
+    });
+    const a = (first.json() as { sandbox: { id: string } }).sandbox;
+    const b = (second.json() as { sandbox: { id: string } }).sandbox;
+    expect(b.id).toBe(a.id);
+
+    await app.inject({ method: "DELETE", url: `/v1/sandboxes/${a.id}` });
+  });
 });

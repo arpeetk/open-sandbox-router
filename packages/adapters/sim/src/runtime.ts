@@ -10,6 +10,7 @@ interface SimSandbox {
   ref: string;
   files: Map<string, Uint8Array>;
   createdAt: number;
+  paused: boolean;
 }
 
 const td = new TextDecoder();
@@ -21,9 +22,15 @@ export class SimulatedRuntime {
 
   constructor(private readonly providerId: string) {}
 
-  create(): string {
+  /** Create a fresh sandbox, optionally seeded from a snapshot's file map (restore). */
+  create(seedFiles?: Map<string, Uint8Array>): string {
     const ref = `${this.providerId}-sim-${++this.seq}`;
-    this.sandboxes.set(ref, { ref, files: new Map(), createdAt: Date.now() });
+    this.sandboxes.set(ref, {
+      ref,
+      files: seedFiles ? new Map(seedFiles) : new Map(),
+      createdAt: Date.now(),
+      paused: false,
+    });
     return ref;
   }
 
@@ -33,6 +40,23 @@ export class SimulatedRuntime {
 
   exists(ref: string): boolean {
     return this.sandboxes.has(ref);
+  }
+
+  pause(ref: string): void {
+    this.box(ref).paused = true;
+  }
+
+  resume(ref: string): void {
+    this.box(ref).paused = false;
+  }
+
+  isPaused(ref: string): boolean {
+    return this.box(ref).paused;
+  }
+
+  /** Snapshot the current file map (deep-copied so later writes don't mutate it). */
+  exportFiles(ref: string): Map<string, Uint8Array> {
+    return new Map(this.box(ref).files);
   }
 
   private box(ref: string): SimSandbox {

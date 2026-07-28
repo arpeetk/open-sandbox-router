@@ -25,12 +25,16 @@ export interface Binding {
   expiresAt?: string;
   /** Idempotency key that produced this binding, if any. */
   idempotencyKey?: string;
+  /** Caller-chosen stable name for get-or-create reuse, if any. */
+  name?: string;
 }
 
 export interface BindingStore {
   create(binding: Binding): Promise<void>;
   get(sandboxId: string): Promise<Binding | undefined>;
   findByIdempotencyKey(tenant: string, key: string): Promise<Binding | undefined>;
+  /** Look up a live binding for named get-or-create reuse. */
+  findByName(tenant: string, name: string): Promise<Binding | undefined>;
   update(sandboxId: string, patch: Partial<Binding>): Promise<Binding>;
   delete(sandboxId: string): Promise<void>;
   list(tenant: string): Promise<Binding[]>;
@@ -53,6 +57,13 @@ export class InMemoryBindingStore implements BindingStore {
   async findByIdempotencyKey(tenant: string, key: string): Promise<Binding | undefined> {
     for (const b of this.byId.values()) {
       if (b.tenant === tenant && b.idempotencyKey === key) return { ...b };
+    }
+    return undefined;
+  }
+
+  async findByName(tenant: string, name: string): Promise<Binding | undefined> {
+    for (const b of this.byId.values()) {
+      if (b.tenant === tenant && b.name === name) return { ...b };
     }
     return undefined;
   }

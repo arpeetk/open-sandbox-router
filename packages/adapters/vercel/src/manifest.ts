@@ -5,14 +5,10 @@ import type { CapabilityManifest } from "@osr/core";
  * ($0.128/vCPU-hr active + provisioned memory), no GPU, exec-based (no stateful
  * code-interpreter session), ports via `sandbox.domain()`.
  *
- * Vercel's own sandboxes DO support persistence/snapshot (`persistent: true` +
- * `stop()`/`Sandbox.get()` auto-resume) and forking from a snapshot — but OSR's
- * SandboxAdapter has no `snapshot`/`restore`/`pause`/`resume` implementation for this
- * provider yet, and SandboxService doesn't expose those ops to callers regardless.
- * `pauseResume`/`snapshot` are kept `false` here so capability negotiation never lets a
- * caller believe they can request a capability nothing in the stack can actually deliver.
- * Flip these once real pause/snapshot/restore wiring lands (see @osr/core's
- * SandboxAdapter for the optional methods to implement).
+ * `pauseResume` and `snapshot` are genuinely wired: `pause` -> `stop()` (snapshots +
+ * pauses), `resume` -> `Sandbox.get({resume: true})`, `snapshot` -> `sandbox.snapshot()`,
+ * `restore` -> `Sandbox.create({source: {type: "snapshot", snapshotId}})`. See
+ * `real.ts`. Named get-or-create reuse (`create({name})`) uses `Sandbox.getOrCreate`.
  */
 export const vercelManifest: CapabilityManifest = {
   provider: "vercel",
@@ -23,8 +19,8 @@ export const vercelManifest: CapabilityManifest = {
     runCode: false,
     filesystem: true,
     exposePorts: true,
-    pauseResume: false,
-    snapshot: false,
+    pauseResume: true,
+    snapshot: true,
     persistentDisk: false,
     gpu: false,
     customImage: true,

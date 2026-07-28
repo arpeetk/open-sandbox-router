@@ -27,6 +27,7 @@ import type {
   ProviderSandbox,
   SandboxAdapter,
   SandboxStatus,
+  SnapshotRef,
 } from "@osr/core";
 import { OsrError } from "@osr/core";
 import { estimateCostFromModel } from "@osr/adapter-sim";
@@ -105,20 +106,26 @@ export class VercelSandboxAdapter implements SandboxAdapter {
       ? (spec.providerOptions!["ports"] as number[])
       : undefined;
 
-    const sandbox = await Sandbox.create({
+    // Persistence intent is derived from whether the caller asked for a named, reusable
+    // sandbox. Unnamed (ephemeral) sandboxes default to `persistent: false`: OSR itself
+    // only exposes pause/resume as an explicit, deliberate op (see below), so an unnamed
+    // sandbox whose handle is lost should not linger as an orphaned, billable, resumable
+    // resource. A named sandbox is an explicit ask to keep it around for later reuse via
+    // `Sandbox.getOrCreate`, so it stays persistent.
+    const persistent = Boolean(spec.name);
+    const params = {
       runtime,
       resources: spec.resources.vcpu ? { vcpus: spec.resources.vcpu } : undefined,
       timeout: spec.ttlSeconds ? spec.ttlSeconds * 1000 : undefined,
       ports,
       env: spec.env,
-      // Vercel defaults to `persistent: true` (auto-snapshot on stop, auto-resume on
-      // next call). OSR doesn't yet expose pause/resume, so an OSR-created sandbox has
-      // no way back once its handle is gone — defaulting to false avoids leaving an
-      // orphaned, billable, snapshotted sandbox behind if a caller never explicitly
-      // destroys it. Revisit once OSR wires real pause/resume.
-      persistent: false,
+      persistent,
       ...authFrom(creds),
-    });
+    };
+
+    const sandbox = spec.name
+      ? await Sandbox.getOrCreate({ name: spec.name, ...params })
+      : await Sandbox.create(params);
 
     return {
       providerRef: sandbox.name,
@@ -142,6 +149,46 @@ export class VercelSandboxAdapter implements SandboxAdapter {
     // sandbox permanently inert. Using `stop()` here would silently leak a resumable,
     // billable sandbox every time a caller thought they'd destroyed it.
     await sandbox.delete();
+  }
+
+  async pause(ref: string, creds: ProviderCreds): Promise<void> {
+    const sandbox = await this.connect(ref, creds);
+    // `stop()` is Vercel's real pause primitive: it snapshots the filesystem and leaves
+    // the sandbox resumable under the same name. Distinct from destroy()'s delete().
+    await sandbox.stop();
+  }
+
+  async resume(ref: string, creds: ProviderCreds): Promise<void> {
+    const { Sandbox } = await this.sdk();
+    // Explicit resume now, rather than relying on the next SDK call to lazily resume.
+    await Sandbox.get({ name: ref, resume: true, ...authFrom(creds) });
+  }
+
+  async snapshot(ref: string, creds: ProviderCreds): Promise<SnapshotRef> {
+    const sandbox = await this.connect(ref, creds);
+    const snap = await sandbox.snapshot();
+    return { provider: this.id, snapshotId: snap.snapshotId };
+  }
+
+  async restore(snap: SnapshotRef, spec: NormalizedSpec, creds: ProviderCreds): Promise<ProviderSandbox> {
+    const { Sandbox } = await this.sdk();
+    // Restoring from a snapshot must omit `runtime`/`image` — the SDK infers the
+    // runtime from the snapshot itself.
+    const sandbox = await Sandbox.create({
+      source: { type: "snapshot", snapshotId: snap.snapshotId },
+      resources: spec.resources.vcpu ? { vcpus: spec.resources.vcpu } : undefined,
+      timeout: spec.ttlSeconds ? spec.ttlSeconds * 1000 : undefined,
+      env: spec.env,
+      persistent: Boolean(spec.name),
+      ...authFrom(creds),
+    });
+    return {
+      providerRef: sandbox.name,
+      status: mapStatus(sandbox.status),
+      region: sandbox.region,
+      expiresAt: sandbox.expiresAt ? new Date(sandbox.expiresAt).toISOString() : undefined,
+      raw: { name: sandbox.name },
+    };
   }
 
   async *exec(ref: string, req: ExecRequest, creds: ProviderCreds): AsyncIterable<ExecEvent> {

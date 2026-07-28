@@ -15,6 +15,7 @@ import type {
   PortInfo,
   RoutePlan,
   Sandbox,
+  SnapshotReference,
 } from "@osr/core";
 import {
   HttpOps,
@@ -61,6 +62,11 @@ export class OSR {
       return new SandboxHandle(this.ops, await this.ops.get(id), []);
     },
     list: (): Promise<Sandbox[]> => this.ops.list(),
+    /** Create a new sandbox restored from a previous `sbx.snapshot()`. */
+    restore: async (snapshot: SnapshotReference, opts: Omit<CreateSandboxRequest, "fromSnapshot"> = {}): Promise<SandboxHandle> => {
+      const outcome = await this.ops.create({ ...opts, fromSnapshot: snapshot });
+      return new SandboxHandle(this.ops, outcome.sandbox, outcome.attempts);
+    },
   };
 
   providers(): Promise<ProviderInfo[]> {
@@ -75,7 +81,7 @@ export class OSR {
 export class SandboxHandle {
   constructor(
     private readonly ops: OsrOps,
-    public readonly sandbox: Sandbox,
+    public sandbox: Sandbox,
     public readonly attempts: { provider: string; error?: string }[],
   ) {}
 
@@ -112,6 +118,23 @@ export class SandboxHandle {
 
   destroy(): Promise<void> {
     return this.ops.destroy(this.id);
+  }
+
+  /** Pause the sandbox (provider-dependent — throws CapabilityUnsupported otherwise). */
+  async pause(): Promise<Sandbox> {
+    this.sandbox = await this.ops.pause(this.id);
+    return this.sandbox;
+  }
+
+  /** Resume a paused sandbox. */
+  async resume(): Promise<Sandbox> {
+    this.sandbox = await this.ops.resume(this.id);
+    return this.sandbox;
+  }
+
+  /** Take a provider-native snapshot; use with `osr.sandboxes.restore()` later. */
+  snapshot(): Promise<SnapshotReference> {
+    return this.ops.snapshot(this.id);
   }
 
   /** Convenience: run a command and collect stdout/stderr/exit. */
