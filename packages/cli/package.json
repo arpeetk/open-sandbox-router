@@ -1,0 +1,17 @@
+{
+  "name": "@osr/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Command-line interface for Open Sandbox Router.",
+  "license": "Apache-2.0",
+  "bin": {
+    "osr": "./src/main.ts"
+  },
+  "dependencies": {
+    "@osr/core": "workspace:*",
+    "@osr/sdk": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,119 @@
+# Self-hosted deployment of the OSR gateway on Kubernetes.
+#
+# The gateway runs as a normal Deployment. When OSR_K8S_REAL=1, the Kubernetes adapter
+# provisions each *sandbox* as a Pod in OSR_K8S_NAMESPACE using the ServiceAccount below,
+# under a gVisor/Kata/Firecracker RuntimeClass for isolation of untrusted code.
+#
+# NOTE: this manifest points at a placeholder image; build and push the gateway image
+# from packages/gateway before applying (see deploy/README.md).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: osr-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: osr-sandboxes
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: osr-gateway
+  namespace: osr-system
+---
+# The gateway needs to create/read/delete Pods (and exec into them) in the sandbox
+# namespace. Scope this Role tightly to the sandbox namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osr-sandbox-manager
+  namespace: osr-sandboxes
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/status"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osr-sandbox-manager
+  namespace: osr-sandboxes
+subjects:
+  - kind: ServiceAccount
+    name: osr-gateway
+    namespace: osr-system
+roleRef:
+  kind: Role
+  name: osr-sandbox-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: osr-provider-creds
+  namespace: osr-system
+type: Opaque
+stringData:
+  # BYOK provider credentials, consumed by the EnvCredentialProvider (OSR_<PROVIDER>_<KEY>).
+  OSR_E2B_API_KEY: "replace-me"
+  OSR_MODAL_TOKEN_ID: "replace-me"
+  OSR_MODAL_TOKEN_SECRET: "replace-me"
+  OSR_VERCEL_TOKEN: "replace-me"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osr-gateway
+  namespace: osr-system
+  labels: { app.kubernetes.io/name: osr-gateway }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: osr-gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: osr-gateway }
+    spec:
+      serviceAccountName: osr-gateway
+      containers:
+        - name: gateway
+          image: ghcr.io/your-org/osr-gateway:0.1.0 # build & push from packages/gateway
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: OSR_PROVIDERS, value: "e2b,modal,vercel,kubernetes" }
+            - { name: OSR_K8S_REAL, value: "1" }
+            - { name: OSR_K8S_NAMESPACE, value: "osr-sandboxes" }
+          envFrom:
+            - secretRef: { name: osr-provider-creds }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 3
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osr-gateway
+  namespace: osr-system
+spec:
+  selector: { app.kubernetes.io/name: osr-gateway }
+  ports:
+    - { port: 80, targetPort: 8080 }
+---
+# Isolation boundary for sandbox Pods. Requires the gVisor runtime installed on nodes.
+# Swap the handler for kata-containers or a Firecracker-backed runtime as desired.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc

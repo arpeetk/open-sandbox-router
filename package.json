@@ -1,0 +1,35 @@
+{
+  "name": "open-sandbox-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A unified, provider-agnostic control plane for code-execution sandboxes.",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "demo": "tsx examples/quickstart.ts",
+    "gateway": "tsx packages/gateway/src/main.ts",
+    "cli": "tsx packages/cli/src/main.ts"
+  },
+  "devDependencies": {
+    "@osr/core": "workspace:*",
+    "@osr/adapter-sim": "workspace:*",
+    "@osr/adapter-e2b": "workspace:*",
+    "@osr/adapter-modal": "workspace:*",
+    "@osr/adapter-vercel": "workspace:*",
+    "@osr/adapter-kubernetes": "workspace:*",
+    "@osr/gateway": "workspace:*",
+    "@osr/sdk": "workspace:*",
+    "@osr/cli": "workspace:*",
+    "@types/node": "^20.17.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

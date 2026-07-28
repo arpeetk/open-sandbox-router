@@ -1,0 +1,14 @@
+# Portable template spec. `osr template build` (roadmap) compiles this to each
+# provider's native image/template format (E2B template, Modal image, Vercel image, and
+# an OCI image for the Kubernetes adapter), registering refs in the template registry
+# keyed by content hash. `create --template python-3.12-datascience` then resolves to the
+# per-provider ref for whichever provider the router selects.
+name: python-3.12-datascience
+base: python:3.12-slim
+setup:
+  - pip install --no-cache-dir pandas numpy matplotlib
+env:
+  PYTHONUNBUFFERED: "1"
+workdir: /work
+expose:
+  - 8501

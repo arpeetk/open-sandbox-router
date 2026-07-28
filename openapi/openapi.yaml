@@ -1,0 +1,354 @@
+openapi: 3.1.0
+info:
+  title: Open Sandbox Router API
+  version: 0.1.0
+  description: >
+    Unified, provider-agnostic control plane for code-execution sandboxes. Routing
+    happens only at create time; every other operation is dispatched to the sandbox's
+    home provider (session affinity). This document is the contract source of truth
+    from which SDKs are generated.
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://localhost:8080
+    description: Local gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: sandboxes
+  - name: routing
+  - name: providers
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: OK
+  /v1/providers:
+    get:
+      tags: [providers]
+      summary: List registered providers with capability manifests and live health
+      responses:
+        "200":
+          description: Provider catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CapabilityManifest" }
+  /v1/route/plan:
+    post:
+      tags: [routing]
+      summary: Dry-run the router for a create request (no provisioning)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSandboxRequest" }
+      responses:
+        "200":
+          description: Route plan
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoutePlan" }
+        "422":
+          $ref: "#/components/responses/Error"
+  /v1/sandboxes:
+    post:
+      tags: [sandboxes]
+      summary: Create a sandbox (the only routing decision point)
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSandboxRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateOutcome" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [sandboxes]
+      summary: List sandboxes for the tenant
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+      responses:
+        "200":
+          description: Sandboxes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Sandbox" }
+  /v1/sandboxes/{id}:
+    get:
+      tags: [sandboxes]
+      summary: Get a sandbox
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Sandbox
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sandbox" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [sandboxes]
+      summary: Destroy a sandbox
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Destroyed }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/sandboxes/{id}/exec:
+    post:
+      tags: [sandboxes]
+      summary: Run a command, streaming stdout/stderr/exit as Server-Sent Events
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExecRequest" }
+      responses:
+        "200":
+          description: SSE stream of ExecEvent objects
+          content:
+            text/event-stream:
+              schema: { type: string }
+  /v1/sandboxes/{id}/runCode:
+    post:
+      tags: [sandboxes]
+      summary: Run code in a stateful interpreter session (SSE)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodeRequest" }
+      responses:
+        "200":
+          description: SSE stream of CodeEvent objects
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/sandboxes/{id}/fs/write:
+    post:
+      tags: [sandboxes]
+      summary: Write a file
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, content]
+              properties:
+                path: { type: string }
+                content: { type: string }
+      responses:
+        "204": { description: Written }
+  /v1/sandboxes/{id}/fs/read:
+    get:
+      tags: [sandboxes]
+      summary: Read a file
+      parameters:
+        - $ref: "#/components/parameters/Id"
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string }
+                  content: { type: string }
+  /v1/sandboxes/{id}/ports:
+    post:
+      tags: [sandboxes]
+      summary: Expose a port and get a preview URL
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [port]
+              properties:
+                port: { type: integer }
+      responses:
+        "200":
+          description: Port info
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PortInfo" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/usage:
+    get:
+      tags: [sandboxes]
+      summary: Normalized usage/metering summary
+      responses:
+        "200": { description: Usage }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Tenant:
+      name: x-osr-tenant
+      in: header
+      required: false
+      schema: { type: string }
+  responses:
+    Error:
+      description: Structured error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    IsolationLevel:
+      type: string
+      enum: [microvm, gvisor, container]
+    CapabilityName:
+      type: string
+      enum: [exec, runCode, filesystem, exposePorts, pauseResume, snapshot, persistentDisk, gpu, customImage]
+    ResourceSpec:
+      type: object
+      properties:
+        vcpu: { type: number }
+        memoryMB: { type: number }
+        diskMB: { type: number }
+        gpu: { oneOf: [{ type: number }, { type: string }] }
+    RoutingPreferences:
+      type: object
+      properties:
+        strategy: { type: string, description: "order | cost | latency | balanced | pin:<provider>" }
+        order: { type: array, items: { type: string } }
+        allow: { type: array, items: { type: string } }
+        deny: { type: array, items: { type: string } }
+        region: { type: string }
+        isolationFloor: { $ref: "#/components/schemas/IsolationLevel" }
+        maxCostPerHourUsd: { type: number }
+        allowFallbacks: { type: boolean, default: true }
+    CreateSandboxRequest:
+      type: object
+      properties:
+        template: { type: string }
+        resources: { $ref: "#/components/schemas/ResourceSpec" }
+        ttlSeconds: { type: number }
+        env: { type: object, additionalProperties: { type: string } }
+        requiredCapabilities: { type: array, items: { $ref: "#/components/schemas/CapabilityName" } }
+        preferredCapabilities: { type: array, items: { $ref: "#/components/schemas/CapabilityName" } }
+        routing: { $ref: "#/components/schemas/RoutingPreferences" }
+        providerOptions: { type: object, additionalProperties: { type: object } }
+        metadata: { type: object, additionalProperties: { type: string } }
+        idempotencyKey: { type: string }
+    Sandbox:
+      type: object
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        status: { type: string, enum: [provisioning, running, paused, stopped, terminated, error] }
+        template: { type: string }
+        resources: { $ref: "#/components/schemas/ResourceSpec" }
+        region: { type: string }
+        capabilities: { type: array, items: { $ref: "#/components/schemas/CapabilityName" } }
+        ports: { type: array, items: { $ref: "#/components/schemas/PortInfo" } }
+        metadata: { type: object, additionalProperties: { type: string } }
+        createdAt: { type: string, format: date-time }
+        lastActiveAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    CreateOutcome:
+      type: object
+      properties:
+        sandbox: { $ref: "#/components/schemas/Sandbox" }
+        attempts:
+          type: array
+          items:
+            type: object
+            properties:
+              provider: { type: string }
+              error: { type: string }
+    ExecRequest:
+      type: object
+      required: [cmd]
+      properties:
+        cmd: { type: string }
+        args: { type: array, items: { type: string } }
+        cwd: { type: string }
+        env: { type: object, additionalProperties: { type: string } }
+        timeoutSeconds: { type: number }
+    CodeRequest:
+      type: object
+      required: [session, code]
+      properties:
+        session: { type: string }
+        code: { type: string }
+        language: { type: string }
+        timeoutSeconds: { type: number }
+    PortInfo:
+      type: object
+      properties:
+        port: { type: integer }
+        url: { type: string }
+        protocol: { type: string, enum: [http, https, tcp] }
+    CapabilityManifest:
+      type: object
+      properties:
+        provider: { type: string }
+        isolation: { $ref: "#/components/schemas/IsolationLevel" }
+        runtimes: { type: array, items: { type: string } }
+        features: { type: object, additionalProperties: { type: boolean } }
+        limits: { type: object }
+        regions: { type: array, items: { type: string } }
+        coldStartMsP50: { type: number }
+        costModel: { type: object }
+    RoutePlan:
+      type: object
+      properties:
+        candidates:
+          type: array
+          items:
+            type: object
+            properties:
+              provider: { type: string }
+              score: { type: number }
+              estimatedUsdPerHour: { type: number }
+              breakdown: { type: object, additionalProperties: { type: number } }
+        excluded:
+          type: array
+          items:
+            type: object
+            properties:
+              provider: { type: string }
+              reason: { type: string }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            provider: { type: string }
+            details: { type: object }

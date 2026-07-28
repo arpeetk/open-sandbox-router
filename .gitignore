@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+coverage/
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+dist-python/
+*.egg-info/

@@ -1,0 +1,27 @@
+{
+  "name": "@osr/adapter-vercel",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Vercel Sandbox provider adapter for Open Sandbox Router.",
+  "license": "Apache-2.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@osr/core": "workspace:*",
+    "@osr/adapter-sim": "workspace:*"
+  },
+  "peerDependencies": {
+    "@vercel/sandbox": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@vercel/sandbox": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

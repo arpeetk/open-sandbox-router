@@ -1,0 +1,18 @@
+{
+  "name": "@osr/adapter-sim",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Simulated in-memory sandbox runtime + base adapter, used for tests, the demo, and as a template for real adapters.",
+  "license": "Apache-2.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@osr/core": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
