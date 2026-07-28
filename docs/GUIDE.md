@@ -343,9 +343,15 @@ pnpm gateway
 
 ## 11. CLI reference
 
+Install the `osr` command once — it bundles into a standalone binary linked onto your
+PATH, so it runs on plain Node with no pnpm/tsx:
+
 ```bash
-pnpm cli -- <command>          # or: node packages/cli/src/main.ts <command>
+pnpm cli:install          # build + link `osr`   (undo: pnpm cli:uninstall)
+osr --version
 ```
+
+(For quick dev without installing, `pnpm cli -- <command>` still works.)
 
 | Command | Description |
 |---|---|
@@ -361,8 +367,8 @@ Flags: `--template`, `--require <cap>` (repeatable), `--prefer <cap>` (repeatabl
 `--order <provider>` (repeatable), `--vcpu`, `--memory`, `--url`, `--tenant`.
 
 ```bash
-OSR_URL=http://localhost:8080 pnpm cli -- plan --require snapshot --strategy cost
-OSR_URL=http://localhost:8080 pnpm cli -- create --template python-3.12 --require runCode
+OSR_URL=http://localhost:8080 osr plan --require snapshot --strategy cost
+OSR_URL=http://localhost:8080 osr create --template python-3.12 --require runCode
 ```
 
 ## 12. Python SDK

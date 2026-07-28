@@ -5,13 +5,21 @@
   "description": "Command-line interface for Open Sandbox Router.",
   "license": "Apache-2.0",
   "bin": {
-    "osr": "./src/main.ts"
+    "osr": "./bin/osr.mjs"
   },
+  "files": [
+    "bin"
+  ],
   "dependencies": {
     "@osr/core": "workspace:*",
     "@osr/sdk": "workspace:*"
   },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
   "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "node build.mjs",
     "typecheck": "tsc --noEmit"
   }
 }

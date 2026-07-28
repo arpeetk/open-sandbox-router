@@ -15,7 +15,10 @@
     "test:watch": "vitest",
     "demo": "tsx examples/quickstart.ts",
     "gateway": "tsx packages/gateway/src/main.ts",
-    "cli": "tsx packages/cli/src/main.ts"
+    "cli": "tsx packages/cli/src/main.ts",
+    "build:cli": "pnpm --filter @osr/cli build",
+    "cli:install": "pnpm build:cli && ln -sf \"$PWD/packages/cli/bin/osr.mjs\" \"$(npm config get prefix)/bin/osr\" && echo \"linked osr -> $(npm config get prefix)/bin/osr\"",
+    "cli:uninstall": "rm -f \"$(npm config get prefix)/bin/osr\" && echo 'removed osr'"
   },
   "devDependencies": {
     "@osr/core": "workspace:*",

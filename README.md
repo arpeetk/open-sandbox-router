@@ -104,13 +104,26 @@ await sbx.destroy();
 
 ### Use the CLI
 
+Install the `osr` command once (bundles into a standalone binary and links it onto your
+PATH — no pnpm/tsx needed at runtime):
+
 ```bash
-pnpm cli -- providers                                   # list providers + capabilities
-pnpm cli -- plan --require runCode --strategy cost      # dry-run routing
-pnpm cli -- create --template python-3.12 --require runCode --strategy latency
-pnpm cli -- ls
-pnpm cli -- exec <id> -- echo hello
+pnpm cli:install        # build + link `osr`  (undo with: pnpm cli:uninstall)
 ```
+
+Then:
+
+```bash
+osr providers                                   # list providers + capabilities
+osr plan --require runCode --strategy cost      # dry-run routing
+osr create --template python-3.12 --require runCode --strategy latency
+osr ls
+osr exec <id> -- echo hello
+osr --version
+```
+
+`osr` talks to a running gateway; set `OSR_URL` if it's not on `http://localhost:8080`.
+During development you can also run it without installing: `pnpm cli -- providers`.
 
 ## What works today
 

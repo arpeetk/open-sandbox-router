@@ -1,4 +1,3 @@
-#!/usr/bin/env -S npx tsx
 /**
  * `osr` — a thin CLI over the OSR gateway. Talks to the same REST API the SDK uses.
  *
@@ -77,9 +76,17 @@ function buildCreateRequest(flags: Parsed["flags"]): CreateSandboxRequest {
   };
 }
 
+const VERSION = "0.1.0";
+
 async function main(): Promise<void> {
   const { _, flags, rest } = parseArgs(process.argv.slice(2));
   const cmd = _[0];
+
+  if (flags.version || cmd === "version") {
+    console.log(`osr ${VERSION}`);
+    return;
+  }
+
   const client = new OSR({
     baseUrl: typeof flags.url === "string" ? flags.url : process.env.OSR_URL,
     tenant: typeof flags.tenant === "string" ? flags.tenant : process.env.OSR_TENANT,
