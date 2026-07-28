@@ -1,8 +1,9 @@
 /**
- * TypeScript client SDK for the Open Sandbox Router gateway.
+ * TypeScript client SDK for Open Sandbox Router.
  *
  * Provides an ergonomic Sandbox handle: create a sandbox, then run commands/code, read
- * and write files, and expose ports — without ever caring which provider served it.
+ * and write files, and expose ports — without caring which provider served it, or whether
+ * you're talking to a gateway (HttpOps) or an in-process service (LocalOps).
  */
 
 import type {
@@ -12,110 +13,68 @@ import type {
   ExecEvent,
   FileEntry,
   PortInfo,
+  RoutePlan,
   Sandbox,
-  CapabilityManifest,
 } from "@osr/core";
-import { OsrError, type OsrErrorCode } from "@osr/core";
+import {
+  HttpOps,
+  type CreateOutcome,
+  type OsrOps,
+  type ProviderInfo,
+} from "./ops.js";
+
+export {
+  HttpOps,
+  LocalOps,
+  type OsrOps,
+  type CreateOutcome,
+  type ProviderInfo,
+  type LocalOpsOptions,
+  type HttpOpsOptions,
+} from "./ops.js";
 
 export interface OsrClientOptions {
   baseUrl?: string;
   apiKey?: string;
   tenant?: string;
   fetch?: typeof fetch;
-}
-
-export interface CreateOutcome {
-  sandbox: Sandbox;
-  attempts: { provider: string; error?: string }[];
+  /** Provide a custom backend (e.g. LocalOps) instead of the default HTTP transport. */
+  ops?: OsrOps;
 }
 
 export class OSR {
-  private readonly baseUrl: string;
-  private readonly headers: Record<string, string>;
-  private readonly doFetch: typeof fetch;
+  /** The active backend (HttpOps by default, or a supplied one such as LocalOps). */
+  readonly ops: OsrOps;
 
   constructor(opts: OsrClientOptions = {}) {
-    this.baseUrl = (opts.baseUrl ?? "http://localhost:8080").replace(/\/$/, "");
-    this.headers = {};
-    if (opts.apiKey) this.headers["authorization"] = `Bearer ${opts.apiKey}`;
-    if (opts.tenant) this.headers["x-osr-tenant"] = opts.tenant;
-    this.doFetch = opts.fetch ?? fetch;
-  }
-
-  /** Build request headers, setting content-type only when a JSON body is sent. */
-  private headersFor(hasBody: boolean): Record<string, string> {
-    return hasBody ? { ...this.headers, "content-type": "application/json" } : { ...this.headers };
+    this.ops =
+      opts.ops ??
+      new HttpOps({ baseUrl: opts.baseUrl, apiKey: opts.apiKey, tenant: opts.tenant, fetch: opts.fetch });
   }
 
   readonly sandboxes = {
     create: async (req: CreateSandboxRequest): Promise<SandboxHandle> => {
-      const outcome = await this.request<CreateOutcome>("POST", "/v1/sandboxes", req);
-      return new SandboxHandle(this, outcome.sandbox, outcome.attempts);
+      const outcome = await this.ops.create(req);
+      return new SandboxHandle(this.ops, outcome.sandbox, outcome.attempts);
     },
     get: async (id: string): Promise<SandboxHandle> => {
-      const sandbox = await this.request<Sandbox>("GET", `/v1/sandboxes/${id}`);
-      return new SandboxHandle(this, sandbox, []);
+      return new SandboxHandle(this.ops, await this.ops.get(id), []);
     },
-    list: async (): Promise<Sandbox[]> => this.request<Sandbox[]>("GET", "/v1/sandboxes"),
+    list: (): Promise<Sandbox[]> => this.ops.list(),
   };
 
-  providers(): Promise<(CapabilityManifest & { health: unknown })[]> {
-    return this.request("GET", "/v1/providers");
+  providers(): Promise<ProviderInfo[]> {
+    return this.ops.providers();
   }
 
-  routePlan(req: CreateSandboxRequest): Promise<unknown> {
-    return this.request("POST", "/v1/route/plan", req);
-  }
-
-  /** @internal */
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await this.doFetch(this.baseUrl + path, {
-      method,
-      headers: this.headersFor(body !== undefined),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    if (res.status === 204) return undefined as T;
-    if (!res.ok) throw await toError(res);
-    return (await res.json()) as T;
-  }
-
-  /** @internal — stream an SSE endpoint as an async iterable of typed events. */
-  async *stream<T>(path: string, body: unknown): AsyncIterable<T> {
-    const res = await this.doFetch(this.baseUrl + path, {
-      method: "POST",
-      headers: this.headersFor(true),
-      body: JSON.stringify(body),
-    });
-    if (!res.ok || !res.body) throw await toError(res);
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n");
-      buffer = chunks.pop() ?? "";
-      for (const chunk of chunks) {
-        const dataLine = chunk.split("\n").find((l) => l.startsWith("data:"));
-        if (!dataLine) continue;
-        const parsed = JSON.parse(dataLine.slice(5).trim());
-        if (parsed?.error) {
-          throw new OsrError((parsed.error.code as OsrErrorCode) ?? "Internal", parsed.error.message);
-        }
-        yield parsed as T;
-      }
-    }
-  }
-
-  get baseUrlValue(): string {
-    return this.baseUrl;
+  routePlan(req: CreateSandboxRequest): Promise<RoutePlan> {
+    return this.ops.routePlan(req);
   }
 }
 
 export class SandboxHandle {
   constructor(
-    private readonly client: OSR,
+    private readonly ops: OsrOps,
     public readonly sandbox: Sandbox,
     public readonly attempts: { provider: string; error?: string }[],
   ) {}
@@ -130,41 +89,32 @@ export class SandboxHandle {
     return this.sandbox.capabilities;
   }
 
-  exec(cmd: string, opts: { args?: string[]; cwd?: string; timeoutSeconds?: number } = {}): AsyncIterable<ExecEvent> {
-    return this.client.stream<ExecEvent>(`/v1/sandboxes/${this.id}/exec`, { cmd, ...opts });
+  exec(
+    cmd: string,
+    opts: { args?: string[]; cwd?: string; timeoutSeconds?: number } = {},
+  ): AsyncIterable<ExecEvent> {
+    return this.ops.exec(this.id, { cmd, ...opts });
   }
 
   runCode(code: string, opts: { session?: string; language?: string } = {}): AsyncIterable<CodeEvent> {
-    return this.client.stream<CodeEvent>(`/v1/sandboxes/${this.id}/runCode`, {
-      session: opts.session ?? "default",
-      code,
-      language: opts.language,
-    });
+    return this.ops.runCode(this.id, { session: opts.session ?? "default", code, language: opts.language });
   }
 
   readonly fs = {
-    write: (path: string, content: string): Promise<void> =>
-      this.client.request("POST", `/v1/sandboxes/${this.id}/fs/write`, { path, content }),
-    read: async (path: string): Promise<string> => {
-      const r = await this.client.request<{ content: string }>(
-        "GET",
-        `/v1/sandboxes/${this.id}/fs/read?path=${encodeURIComponent(path)}`,
-      );
-      return r.content;
-    },
-    list: (path = "/"): Promise<FileEntry[]> =>
-      this.client.request("GET", `/v1/sandboxes/${this.id}/fs/list?path=${encodeURIComponent(path)}`),
+    write: (path: string, content: string): Promise<void> => this.ops.fsWrite(this.id, path, content),
+    read: (path: string): Promise<string> => this.ops.fsRead(this.id, path),
+    list: (path = "/"): Promise<FileEntry[]> => this.ops.fsList(this.id, path),
   };
 
   exposePort(port: number): Promise<PortInfo> {
-    return this.client.request("POST", `/v1/sandboxes/${this.id}/ports`, { port });
+    return this.ops.exposePort(this.id, port);
   }
 
   destroy(): Promise<void> {
-    return this.client.request("DELETE", `/v1/sandboxes/${this.id}`);
+    return this.ops.destroy(this.id);
   }
 
-  /** Convenience: run a command and collect stdout. */
+  /** Convenience: run a command and collect stdout/stderr/exit. */
   async run(cmd: string, args?: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
     let stdout = "";
     let stderr = "";
@@ -176,19 +126,4 @@ export class SandboxHandle {
     }
     return { stdout, stderr, code };
   }
-}
-
-async function toError(res: Response): Promise<OsrError> {
-  let code: OsrErrorCode = "Internal";
-  let message = `HTTP ${res.status}`;
-  try {
-    const body = (await res.json()) as { error?: { code?: OsrErrorCode; message?: string } };
-    if (body.error) {
-      code = body.error.code ?? code;
-      message = body.error.message ?? message;
-    }
-  } catch {
-    // non-JSON error body
-  }
-  return new OsrError(code, message);
 }

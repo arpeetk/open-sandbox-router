@@ -104,9 +104,22 @@ importers:
       '@osr/core':
         specifier: workspace:*
         version: link:../core
+      '@osr/embed':
+        specifier: workspace:*
+        version: link:../embed
       '@osr/sdk':
         specifier: workspace:*
         version: link:../sdk
+    optionalDependencies:
+      '@kubernetes/client-node':
+        specifier: '>=0.21.0'
+        version: 1.4.0
+      '@vercel/sandbox':
+        specifier: '>=2.0.0'
+        version: 2.9.0
+      modal:
+        specifier: '>=0.9.0'
+        version: 0.9.0
     devDependencies:
       esbuild:
         specifier: ^0.25.0
@@ -114,7 +127,7 @@ importers:
 
   packages/core: {}
 
-  packages/gateway:
+  packages/embed:
     dependencies:
       '@osr/adapter-e2b':
         specifier: workspace:*
@@ -125,12 +138,24 @@ importers:
       '@osr/adapter-modal':
         specifier: workspace:*
         version: link:../adapters/modal
+      '@osr/adapter-sim':
+        specifier: workspace:*
+        version: link:../adapters/sim
       '@osr/adapter-vercel':
         specifier: workspace:*
         version: link:../adapters/vercel
       '@osr/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/gateway:
+    dependencies:
+      '@osr/core':
+        specifier: workspace:*
+        version: link:../core
+      '@osr/embed':
+        specifier: workspace:*
+        version: link:../embed
       fastify:
         specifier: ^5.2.1
         version: 5.10.0

@@ -10,7 +10,11 @@
  */
 
 import type { CapabilityName, CreateSandboxRequest } from "@osr/core";
-import { OSR } from "@osr/sdk";
+import { OSR, LocalOps } from "@osr/sdk";
+import { buildEmbeddedService, FileBindingStore, loadEnvFiles, defaultStatePath } from "@osr/embed";
+
+/** Flags that never take a value (so `osr --local providers` parses correctly). */
+const BOOLEAN_FLAGS = new Set(["local", "version", "help"]);
 
 interface Parsed {
   _: string[];
@@ -30,6 +34,10 @@ function parseArgs(argv: string[]): Parsed {
     }
     if (a.startsWith("--")) {
       const key = a.slice(2);
+      if (BOOLEAN_FLAGS.has(key)) {
+        flags[key] = true;
+        continue;
+      }
       const next = argv[i + 1];
       if (next === undefined || next.startsWith("--")) {
         flags[key] = true;
@@ -87,10 +95,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = new OSR({
-    baseUrl: typeof flags.url === "string" ? flags.url : process.env.OSR_URL,
-    tenant: typeof flags.tenant === "string" ? flags.tenant : process.env.OSR_TENANT,
-  });
+  const tenant = typeof flags.tenant === "string" ? flags.tenant : (process.env.OSR_TENANT ?? "default");
+  const local = Boolean(flags.local) || process.env.OSR_LOCAL === "1" || process.env.OSR_MODE === "local";
+
+  let client: OSR;
+  if (local) {
+    // Embed the router in-process — no gateway needed. Bindings persist to disk so
+    // session affinity survives across separate CLI invocations. Real providers (via
+    // OSR_<PROVIDER>_REAL=1 in your env/.env.local) reconnect by their remote id.
+    loadEnvFiles();
+    const { service, registry } = buildEmbeddedService({
+      bindings: new FileBindingStore(defaultStatePath()),
+    });
+    client = new OSR({ ops: new LocalOps({ service, registry, tenant }) });
+  } else {
+    client = new OSR({
+      baseUrl: typeof flags.url === "string" ? flags.url : process.env.OSR_URL,
+      tenant,
+    });
+  }
 
   switch (cmd) {
     case "providers": {
@@ -150,7 +173,10 @@ async function main(): Promise<void> {
           "  exec <id> -- <cmd...>     run a command",
           "  rm <id>                   destroy a sandbox",
           "",
-          "flags: --template --require <cap> --prefer <cap> --strategy <s> --region <r>",
+          "modes:  default talks to a gateway (OSR_URL); --local embeds the router",
+          "        in-process (no gateway) and persists state to ~/.osr/bindings.json",
+          "",
+          "flags: --local --template --require <cap> --prefer <cap> --strategy <s> --region <r>",
           "       --isolation <lvl> --max-cost <usd> --order <p> --vcpu --memory --url --tenant",
         ].join("\n"),
       );

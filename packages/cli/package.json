@@ -12,7 +12,13 @@
   ],
   "dependencies": {
     "@osr/core": "workspace:*",
-    "@osr/sdk": "workspace:*"
+    "@osr/sdk": "workspace:*",
+    "@osr/embed": "workspace:*"
+  },
+  "optionalDependencies": {
+    "modal": ">=0.9.0",
+    "@vercel/sandbox": ">=2.0.0",
+    "@kubernetes/client-node": ">=0.21.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

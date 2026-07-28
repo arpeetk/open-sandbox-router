@@ -11,10 +11,7 @@
   },
   "dependencies": {
     "@osr/core": "workspace:*",
-    "@osr/adapter-e2b": "workspace:*",
-    "@osr/adapter-modal": "workspace:*",
-    "@osr/adapter-vercel": "workspace:*",
-    "@osr/adapter-kubernetes": "workspace:*",
+    "@osr/embed": "workspace:*",
     "fastify": "^5.2.1"
   },
   "scripts": {

@@ -122,7 +122,17 @@ osr exec <id> -- echo hello
 osr --version
 ```
 
-`osr` talks to a running gateway; set `OSR_URL` if it's not on `http://localhost:8080`.
+By default `osr` talks to a running gateway (set `OSR_URL` if it's not on
+`http://localhost:8080`). **No gateway? Use `--local`** to embed the router in-process —
+state persists to `~/.osr/bindings.json`, so bindings survive across commands:
+
+```bash
+osr --local providers
+osr --local create --require filesystem --strategy cost
+osr --local exec <id> -- echo hi        # a separate process reconnects via the saved binding
+osr --local rm <id>
+```
+
 During development you can also run it without installing: `pnpm cli -- providers`.
 
 ## What works today

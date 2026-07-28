@@ -377,32 +377,51 @@ Providers without credentials are skipped — nothing is provisioned for them. E
   ...
 ```
 
-**Option B — the gateway + `osr` CLI (interactive):**
+**Option B — the `osr` CLI in local mode (no gateway):**
+
+`--local` embeds the router in-process and reads your `.env.local`, so you can drive real
+providers straight from the CLI. Bindings persist to `~/.osr/bindings.json`, so a
+`create` in one shell and an `exec` in another dispatch to the same sandbox.
 
 ```bash
-# start the gateway with live providers (loads env from your shell)
-set -a; source .env.local; set +a
-OSR_PROVIDERS=modal,vercel pnpm gateway
-```
-
-Then in another terminal, force each provider with a pin and drive it live:
-
-```bash
-osr providers
-
-# Modal
-MID=$(osr create --template python-3.12 --require filesystem --strategy pin:modal | grep -oE 'sbx_[a-z0-9]+')
-osr exec "$MID" -- python --version
-osr rm "$MID"
+pnpm cli:install     # once
 
 # Vercel
-VID=$(osr create --template node-20 --require filesystem --strategy pin:vercel | grep -oE 'sbx_[a-z0-9]+')
-osr exec "$VID" -- node --version
-osr rm "$VID"
+VID=$(osr --local create --template node-20 --require filesystem --strategy pin:vercel | grep -oE 'sbx_[a-z0-9]+')
+osr --local exec "$VID" -- node --version
+osr --local rm "$VID"
 
-# or let the router choose and just watch where it lands
-osr plan --require filesystem --strategy cost
-osr create --require filesystem --strategy cost
+# Modal
+MID=$(osr --local create --template python-3.12 --require filesystem --strategy pin:modal | grep -oE 'sbx_[a-z0-9]+')
+osr --local exec "$MID" -- python --version
+osr --local rm "$MID"
+
+# or let the router choose
+osr --local plan --require filesystem --strategy cost
+osr --local create --require filesystem --strategy cost
+```
+
+> **Cross-process session affinity requires a real provider.** Each `osr --local`
+> invocation is a fresh process. The binding (`sandbox -> provider`) persists to disk, so
+> a later `osr --local exec`/`rm` in a different shell correctly reconnects — but only if
+> the provider's *sandbox itself* lives outside that process too. Real providers (Modal,
+> Vercel with `OSR_MODAL_REAL=1` / `OSR_VERCEL_REAL=1`) satisfy this, since the sandbox
+> runs on the vendor's infrastructure. Simulated providers (the default for every
+> provider, including E2B and Kubernetes today) only exist in the memory of the process
+> that created them, so a separate `exec`/`rm` process will get `NotFound` — that's
+> expected, not a bug. If you want multi-command simulated testing, use the gateway
+> instead (`pnpm gateway`): its adapters live for the process's lifetime, so simulated
+> sandboxes persist across requests. When routing without a pin (e.g. `--strategy cost`),
+> pass `--order` or `--allow` to keep the result on a real provider — otherwise the
+> router may pick a simulated one.
+
+**Option C — the gateway + `osr` CLI (client/server):**
+
+```bash
+set -a; source .env.local; set +a          # export creds into the gateway
+OSR_PROVIDERS=modal,vercel pnpm gateway     # terminal 1
+osr providers                               # terminal 2 (no --local -> uses the gateway)
+osr create --template node-20 --require filesystem --strategy pin:vercel
 ```
 
 > Note: `runCode` (stateful interpreter) is E2B-only — with Modal/Vercel, require
