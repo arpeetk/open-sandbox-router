@@ -341,6 +341,74 @@ OSR_VERCEL_TOKEN=... OSR_VERCEL_TEAM_ID=team_... OSR_VERCEL_PROJECT_ID=prj_... \
 pnpm gateway
 ```
 
+### Try it live against Modal and Vercel
+
+Put your credentials in a git-ignored `.env.local` (never commit them):
+
+```bash
+cp .env.example .env.local     # then fill in your tokens
+```
+
+For **Vercel** you need all three of `OSR_VERCEL_TOKEN`, `OSR_VERCEL_TEAM_ID`,
+`OSR_VERCEL_PROJECT_ID`, and the project must exist. Find/create them at
+vercel.com → Account Settings → Tokens, and your team/project in their settings (or via
+`GET https://api.vercel.com/v9/projects`). For **Modal**, either set
+`OSR_MODAL_TOKEN_ID`/`OSR_MODAL_TOKEN_SECRET` or configure `~/.modal.toml`.
+
+**Option A — one scripted run (both providers):**
+
+```bash
+pnpm demo:live
+```
+
+It reads `.env.local`, then for each provider with credentials: creates a real sandbox
+(pinned to that provider), runs a version command, writes+reads a file, and destroys it.
+Providers without credentials are skipped — nothing is provisioned for them. Expected:
+
+```
+=== MODAL (live) ===
+  created sbx_… on "modal"  (…ms)
+  exec python --version -> "Python 3.12.13"
+  fs write+read /tmp/osr.txt -> "hello from OSR"
+  destroyed
+=== VERCEL (live) ===
+  created sbx_… on "vercel"  (…ms)
+  exec node --version -> "v22.22.2"
+  ...
+```
+
+**Option B — the gateway + `osr` CLI (interactive):**
+
+```bash
+# start the gateway with live providers (loads env from your shell)
+set -a; source .env.local; set +a
+OSR_PROVIDERS=modal,vercel pnpm gateway
+```
+
+Then in another terminal, force each provider with a pin and drive it live:
+
+```bash
+osr providers
+
+# Modal
+MID=$(osr create --template python-3.12 --require filesystem --strategy pin:modal | grep -oE 'sbx_[a-z0-9]+')
+osr exec "$MID" -- python --version
+osr rm "$MID"
+
+# Vercel
+VID=$(osr create --template node-20 --require filesystem --strategy pin:vercel | grep -oE 'sbx_[a-z0-9]+')
+osr exec "$VID" -- node --version
+osr rm "$VID"
+
+# or let the router choose and just watch where it lands
+osr plan --require filesystem --strategy cost
+osr create --require filesystem --strategy cost
+```
+
+> Note: `runCode` (stateful interpreter) is E2B-only — with Modal/Vercel, require
+> `filesystem` and use `exec`. Always `rm`/`destroy` sandboxes you create so they don't
+> bill while idle.
+
 ## 11. CLI reference
 
 Install the `osr` command once — it bundles into a standalone binary linked onto your

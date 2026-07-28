@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "demo": "tsx examples/quickstart.ts",
+    "demo:live": "tsx examples/live-providers.ts",
     "gateway": "tsx packages/gateway/src/main.ts",
     "cli": "tsx packages/cli/src/main.ts",
     "build:cli": "pnpm --filter @osr/cli build",
