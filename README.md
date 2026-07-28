@@ -12,6 +12,15 @@ failover.
 > wiring their live APIs is the next step. See [`SPEC.md`](./SPEC.md) for the full
 > product & technical spec.
 
+## Documentation
+
+- **[Using the Router — practical guide](./docs/GUIDE.md)** — start here to create
+  sandboxes, control routing, run work, and handle failures.
+- **[Architecture](./ARCHITECTURE.md)** — the adapter boundary, request lifecycle, and
+  how to add a provider.
+- **[Product & technical spec](./SPEC.md)** — full rationale and roadmap.
+- **[OpenAPI contract](./openapi/openapi.yaml)** — the REST API source of truth.
+
 ---
 
 ## Why
