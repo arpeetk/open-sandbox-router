@@ -43,7 +43,11 @@ export function buildServer(ctx: AppContext = buildContext()): FastifyInstance {
 
   // Provider catalog + live health.
   app.get("/v1/providers", async () =>
-    registry.manifests().map((m) => ({ ...m, health: registry.healthOf(m.provider) })),
+    registry.manifests().map((m) => ({
+      ...m,
+      health: registry.healthOf(m.provider),
+      simulated: registry.get(m.provider).simulated,
+    })),
   );
 
   // Dry-run routing: see where a request WOULD be placed and why.

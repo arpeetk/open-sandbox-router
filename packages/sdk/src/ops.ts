@@ -28,7 +28,7 @@ export interface CreateOutcome {
   attempts: { provider: string; error?: string }[];
 }
 
-export type ProviderInfo = CapabilityManifest & { health?: unknown };
+export type ProviderInfo = CapabilityManifest & { health?: unknown; simulated: boolean };
 
 export interface ExecArgs {
   cmd: string;
@@ -197,7 +197,11 @@ export class LocalOps implements OsrOps {
   }
 
   async providers(): Promise<ProviderInfo[]> {
-    return this.registry.manifests().map((m) => ({ ...m, health: this.registry.healthOf(m.provider) }));
+    return this.registry.manifests().map((m) => ({
+      ...m,
+      health: this.registry.healthOf(m.provider),
+      simulated: this.registry.get(m.provider).simulated,
+    }));
   }
   async routePlan(req: CreateSandboxRequest): Promise<RoutePlan> {
     return this.service.planRoute(req);

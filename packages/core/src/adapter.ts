@@ -74,6 +74,15 @@ export interface SandboxAdapter {
   /** Static + probed capability manifest used by negotiation and scoring. */
   capabilities(): CapabilityManifest;
 
+  /**
+   * True if this instance is a simulated, in-memory stand-in rather than the real
+   * provider — same manifest, same provider id, but nothing here ever touches the
+   * vendor's API. Surfaced on `Sandbox.simulated` and in `osr providers` so it's never
+   * silently ambiguous which one you're actually running against (e.g. Vercel/Modal
+   * default to simulated unless `OSR_<PROVIDER>_REAL=1` is set).
+   */
+  readonly simulated: boolean;
+
   /** Normalized cost estimate for the given spec (comparable across providers). */
   estimateCost(spec: NormalizedSpec): CostEstimate;
 

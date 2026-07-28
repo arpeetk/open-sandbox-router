@@ -78,6 +78,7 @@ export interface ModalAdapterConfig {
 
 export class ModalSandboxAdapter implements SandboxAdapter {
   readonly id = "modal";
+  readonly simulated = false;
   private modPromise?: Promise<any>;
   private readonly appName: string;
 

@@ -65,6 +65,7 @@ class FakeAdapter implements SandboxAdapter {
     private readonly failWith?: OsrErrorCode,
     private readonly log?: CallLog,
   ) {}
+  readonly simulated = true;
   get id(): string {
     return this.m.provider;
   }

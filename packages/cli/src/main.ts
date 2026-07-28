@@ -140,7 +140,8 @@ async function main(): Promise<void> {
           .filter(([, v]) => v)
           .map(([k]) => k)
           .join(",");
-        console.log(`${p.provider.padEnd(12)} ${p.isolation.padEnd(9)} ~${p.coldStartMsP50}ms  [${feats}]`);
+        const tag = p.simulated ? " [SIMULATED]" : "";
+        console.log(`${p.provider.padEnd(12)} ${p.isolation.padEnd(9)} ~${p.coldStartMsP50}ms  [${feats}]${tag}`);
       }
       break;
     }
@@ -151,7 +152,8 @@ async function main(): Promise<void> {
     }
     case "create": {
       const sbx = await client.sandboxes.create(buildCreateRequest(flags));
-      console.log(`created ${sbx.id} on ${sbx.provider} (caps: ${sbx.capabilities.join(", ")})`);
+      const tag = sbx.sandbox.simulated ? " [SIMULATED — never touched the real provider]" : "";
+      console.log(`created ${sbx.id} on ${sbx.provider}${tag} (caps: ${sbx.capabilities.join(", ")})`);
       if (sbx.attempts.length > 1) {
         console.log(`  failover path: ${sbx.attempts.map((a) => a.provider).join(" -> ")}`);
       }
@@ -159,7 +161,10 @@ async function main(): Promise<void> {
     }
     case "ls": {
       const list = await client.sandboxes.list();
-      for (const s of list) console.log(`${s.id}  ${s.provider.padEnd(12)} ${s.status}`);
+      for (const s of list) {
+        const tag = s.simulated ? " [SIMULATED]" : "";
+        console.log(`${s.id}  ${s.provider.padEnd(12)} ${s.status}${tag}`);
+      }
       break;
     }
     case "exec": {

@@ -113,6 +113,9 @@ export interface Sandbox {
   /** OSR-scoped stable id, independent of the provider's native id. */
   id: string;
   provider: string;
+  /** True if `provider` is a simulated stand-in (see SandboxAdapter.simulated) — this
+   * sandbox never touched the real vendor's API. */
+  simulated: boolean;
   status: SandboxStatus;
   template?: string;
   resources: ResourceSpec;

@@ -383,6 +383,7 @@ export class SandboxService {
     return {
       sandboxId: this.newId(),
       provider,
+      simulated: adapter.simulated,
       providerRef: ps.providerRef,
       tenant: ctx.tenant,
       region: ps.region ?? req.routing?.region,
@@ -404,6 +405,7 @@ function toSandbox(b: Binding): Sandbox {
   return {
     id: b.sandboxId,
     provider: b.provider,
+    simulated: b.simulated,
     status: b.status,
     template: b.template,
     resources: b.resources,

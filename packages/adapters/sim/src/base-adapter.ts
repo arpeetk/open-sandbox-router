@@ -33,6 +33,7 @@ export interface SimAdapterConfig {
 
 export class SimAdapter implements SandboxAdapter {
   readonly id: string;
+  readonly simulated = true;
   private readonly manifest: CapabilityManifest;
   private readonly runtime: SimulatedRuntime;
   private failCreateWith?: OsrErrorCode;

@@ -72,6 +72,7 @@ function dirname(path: string): string {
 
 export class VercelSandboxAdapter implements SandboxAdapter {
   readonly id = "vercel";
+  readonly simulated = false;
   private modPromise?: Promise<any>;
 
   private async sdk(): Promise<any> {
@@ -153,8 +154,13 @@ export class VercelSandboxAdapter implements SandboxAdapter {
 
   async pause(ref: string, creds: ProviderCreds): Promise<void> {
     const sandbox = await this.connect(ref, creds);
-    // `stop()` is Vercel's real pause primitive: it snapshots the filesystem and leaves
-    // the sandbox resumable under the same name. Distinct from destroy()'s delete().
+    // `stop()` only auto-snapshots (and is therefore only resumable) on a `persistent`
+    // sandbox — verified against the live API: calling stop() on a non-persistent
+    // sandbox (the default for unnamed create()s) leaves nothing to resume from, and a
+    // later Sandbox.get({resume:true}) fails with `snapshot_not_found`. Since calling
+    // `pause` is an explicit ask to come back to this sandbox later, force persistence
+    // on first so pause is ALWAYS resumable regardless of how the sandbox was created.
+    await sandbox.update({ persistent: true });
     await sandbox.stop();
   }
 

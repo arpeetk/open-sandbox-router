@@ -29,6 +29,29 @@ describe("gateway REST API", () => {
     expect(providers.map((p) => p.provider).sort()).toEqual(["e2b", "kubernetes", "modal", "vercel"]);
   });
 
+  it("flags every provider as simulated by default (no OSR_<PROVIDER>_REAL set)", async () => {
+    // Regression coverage: same provider id ("vercel") whether real or simulated, so
+    // this flag is the only thing distinguishing them — it must default correctly.
+    const res = await app.inject({ method: "GET", url: "/v1/providers" });
+    const providers = res.json() as { provider: string; simulated: boolean }[];
+    for (const p of providers) expect(p.simulated, `${p.provider} should be simulated`).toBe(true);
+  });
+
+  it("marks a created sandbox as simulated, persisted through get()", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/sandboxes",
+      payload: { requiredCapabilities: ["filesystem"], routing: { strategy: "pin:vercel" } },
+    });
+    const { sandbox } = create.json() as { sandbox: { id: string; simulated: boolean } };
+    expect(sandbox.simulated).toBe(true);
+
+    const get = await app.inject({ method: "GET", url: `/v1/sandboxes/${sandbox.id}` });
+    expect((get.json() as { simulated: boolean }).simulated).toBe(true);
+
+    await app.inject({ method: "DELETE", url: `/v1/sandboxes/${sandbox.id}` });
+  });
+
   it("creates, gets, and destroys a sandbox", async () => {
     const create = await app.inject({
       method: "POST",

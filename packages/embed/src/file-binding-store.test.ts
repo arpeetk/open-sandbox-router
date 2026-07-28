@@ -10,6 +10,7 @@ function binding(id: string, over: Partial<Binding> = {}): Binding {
   return {
     sandboxId: id,
     provider: "modal",
+    simulated: false,
     providerRef: `ref-${id}`,
     tenant: "t1",
     resources: {},

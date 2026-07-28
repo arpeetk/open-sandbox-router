@@ -64,6 +64,7 @@ const IMAGE_BY_RUNTIME: Record<string, string> = {
 
 export class KubernetesAdapter implements SandboxAdapter {
   readonly id = "kubernetes";
+  readonly simulated: boolean;
   private readonly api: KubeApi;
   private readonly namespace: string;
   private readonly defaultImage: string;
@@ -71,6 +72,7 @@ export class KubernetesAdapter implements SandboxAdapter {
 
   constructor(opts: KubernetesAdapterOptions = {}) {
     this.api = opts.api ?? new ClientNodeKubeApi();
+    this.simulated = this.api instanceof SimulatedKubeApi;
     this.namespace = opts.namespace ?? "osr-sandboxes";
     this.defaultImage = opts.defaultImage ?? IMAGE_BY_RUNTIME["python-3.12"]!;
     this.ingressDomain = opts.ingressDomain ?? "sandbox.local";

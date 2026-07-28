@@ -327,6 +327,10 @@ Calling one of these against an unsupported provider throws `CapabilityUnsupport
 ```ts
 await sbx.pause();                 // e.g. Vercel: stop() — snapshots + pauses
 await sbx.resume();                // e.g. Vercel: Sandbox.get({ resume: true })
+// Vercel: `pause()` always leaves the sandbox resumable, even if it was created
+// without a `name` (unnamed sandboxes default to non-persistent) — pause forces
+// persistence on first. Verified live: without this, resume() fails with the
+// provider's own `snapshot_not_found` error.
 
 const snap = await sbx.snapshot();  // { provider, snapshotId } — opaque outside that provider
 const clone = await osr.sandboxes.restore(snap, { requiredCapabilities: ["filesystem"] });
@@ -374,6 +378,15 @@ away from a struggling provider.
 
 Every adapter defaults to a **simulated** in-memory runtime so you can develop and test
 with no credentials. Switch a provider to its live SDK explicitly.
+
+> **A simulated and a live provider use the exact same id** (`"vercel"` either way) —
+> that's deliberate (routing shouldn't care), but it means you can't tell them apart from
+> the provider name alone. Every provider and sandbox carries a `simulated: boolean`
+> field precisely so this is never ambiguous: `osr providers` and `osr ls`/`osr create`
+> print a `[SIMULATED]` tag whenever it's `true`. If you expect to be hitting a real
+> vendor and don't see that tag disappear, `OSR_<PROVIDER>_REAL` or your credentials
+> aren't actually being picked up — check `osr providers` first, before debugging
+> anything else.
 
 **Library mode:**
 
@@ -440,6 +453,20 @@ Providers without credentials are skipped — nothing is provisioned for them. E
   exec node --version -> "v22.22.2"
   ...
 ```
+
+**Option A.5 — the full CLI e2e suite (every command, both providers):**
+
+```bash
+./examples/cli-e2e-live.sh
+```
+
+Spawns the actual built `osr` binary (not library calls) in `--local` mode and drives
+every supported command against real Modal and Vercel: `providers`, `plan`, `create`
+(plain, named get-or-create, `pin:<provider>`), `exec` (with and without `--`), `pause`/
+`resume` (and confirms Modal correctly rejects pause with `CapabilityUnsupported`, since
+its SDK has no such primitive), `snapshot` + `--from-snapshot` restore (asserting the
+restored sandbox is genuinely new, not the same one), and `rm`. Cleans up everything it
+creates on exit, including on failure. Prints a pass/fail count per assertion.
 
 **Option B — the `osr` CLI in local mode (no gateway):**
 

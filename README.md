@@ -161,6 +161,10 @@ During development you can also run it without installing: `pnpm cli -- provider
   (`OSR_REAP_INTERVAL_MS`), not just stores the deadline.
 - **Self-hosted Kubernetes adapter** — Pod-per-sandbox with a real `@kubernetes/client-node`
   path and a simulated path so it runs without a cluster.
+- **Never-ambiguous simulated vs live** — a simulated provider uses the same id as the
+  real one, so every provider and sandbox carries a `simulated: boolean` (`osr providers`
+  / `osr ls` show a `[SIMULATED]` tag) — you can always tell whether you actually reached
+  the vendor's API.
 
 ## Configuration (gateway)
 

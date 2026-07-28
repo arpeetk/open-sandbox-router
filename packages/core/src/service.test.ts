@@ -42,6 +42,7 @@ class LifecycleFakeAdapter implements SandboxAdapter {
     private readonly features: { pauseResume?: boolean; snapshot?: boolean } = {},
   ) {}
 
+  readonly simulated = true;
   get id(): string {
     return this.m.provider;
   }
@@ -314,5 +315,25 @@ describe("TTL reaper", () => {
     const result = await svc.reapExpired(new Date(Date.now() + 5000));
     expect(result.destroyed).toEqual([b.sandbox.id]);
     expect(result.failed).toEqual([{ sandboxId: a.sandbox.id, error: "boom" }]);
+  });
+});
+
+describe("simulated flag", () => {
+  // Regression coverage for a real point of confusion: a simulated adapter uses the
+  // SAME provider id as the real one ("vercel" either way), so `sandbox.simulated` is
+  // the only thing that tells a caller whether they actually reached the vendor's API.
+  it("is true on the created Sandbox when the bound adapter is simulated", async () => {
+    const reg = new ProviderRegistry();
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"))); // simulated=true by construction
+    const svc = new SandboxService({ registry: reg, bindings: new InMemoryBindingStore(), credentials: noCreds });
+
+    const { sandbox } = await svc.create({ requiredCapabilities: [] }, { tenant: "t" });
+    expect(sandbox.simulated).toBe(true);
+
+    const fetched = await svc.get(sandbox.id);
+    expect(fetched.simulated).toBe(true); // persisted on the binding, not just the create response
+
+    const listed = await svc.list("t");
+    expect(listed[0]?.simulated).toBe(true);
   });
 });

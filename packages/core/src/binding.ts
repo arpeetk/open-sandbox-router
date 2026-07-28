@@ -12,6 +12,9 @@ import type { CapabilityName, ResourceSpec, SandboxStatus } from "./types.js";
 export interface Binding {
   sandboxId: string;
   provider: string;
+  /** True if `provider` was a simulated stand-in at create time (see
+   * SandboxAdapter.simulated). Recorded once, at creation — not re-checked later. */
+  simulated: boolean;
   providerRef: string;
   tenant: string;
   region?: string;
