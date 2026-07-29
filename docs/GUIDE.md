@@ -387,6 +387,15 @@ with no credentials. Switch a provider to its live SDK explicitly.
 > vendor and don't see that tag disappear, `OSR_<PROVIDER>_REAL` or your credentials
 > aren't actually being picked up — check `osr providers` first, before debugging
 > anything else.
+>
+> **A sandbox created before a config change can become stranded.** `--local` mode
+> rebuilds its registry fresh from your current environment on every invocation, so a
+> sandbox created while a provider was simulated (e.g. `.env.local` got deleted or
+> `OSR_VERCEL_REAL` wasn't set yet) will fail with a clear `NotFound` error — not a
+> confusing vendor API error — if you later flip that provider to live and try to
+> `exec`/`pause`/etc. on the same sandbox id. `osr rm <id>` still works in this case
+> (cleanup is exempt, since there's nothing valid left for either adapter to act on) —
+> just create a new sandbox afterward.
 
 **Library mode:**
 

@@ -186,7 +186,10 @@ async function main(): Promise<void> {
     case "rm": {
       const id = _[1];
       if (!id) throw new Error("usage: osr rm <id>");
-      await (await client.sandboxes.get(id)).destroy();
+      // Destroy directly rather than `(await client.sandboxes.get(id)).destroy()` — get()
+      // deliberately still fails on a stranded binding (see docs/GUIDE.md's note on the
+      // `simulated` flag), and rm must be able to clean those up, not just healthy ones.
+      await client.ops.destroy(id);
       console.log(`destroyed ${id}`);
       break;
     }

@@ -37,12 +37,16 @@ class LifecycleFakeAdapter implements SandboxAdapter {
   private readonly snapshots = new Map<string, Map<string, Uint8Array>>();
   createCallCount = 0;
 
+  readonly simulated: boolean;
+
   constructor(
     private readonly m: CapabilityManifest,
     private readonly features: { pauseResume?: boolean; snapshot?: boolean } = {},
-  ) {}
+    simulated = true,
+  ) {
+    this.simulated = simulated;
+  }
 
-  readonly simulated = true;
   get id(): string {
     return this.m.provider;
   }
@@ -335,5 +339,42 @@ describe("simulated flag", () => {
 
     const listed = await svc.list("t");
     expect(listed[0]?.simulated).toBe(true);
+  });
+
+  it("fails loud (not with a confusing vendor error) when the registry config changed since create", async () => {
+    // Reproduces a real report: a sandbox created while a provider was simulated, then
+    // the SAME provider id gets re-registered as real (e.g. --local mode rebuilds the
+    // registry fresh per process, and OSR_VERCEL_REAL flips between runs). The binding's
+    // providerRef ("vercel-sim-1") means nothing to the now-real adapter — dispatching to
+    // it anyway would reach the vendor's actual API and get back its own opaque 404.
+    const reg = new ProviderRegistry();
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"), {}, true)); // simulated
+    const svc = new SandboxService({ registry: reg, bindings: new InMemoryBindingStore(), credentials: noCreds });
+    const { sandbox } = await svc.create({ requiredCapabilities: [] }, { tenant: "t" });
+
+    // Registry config "changes" — same provider id, now registered as real.
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"), {}, false));
+
+    await expectCode(svc.get(sandbox.id), "NotFound");
+    await expectCode(
+      (async () => {
+        for await (const _ of svc.exec(sandbox.id, { cmd: "true" })) void _;
+      })(),
+      "NotFound",
+    );
+  });
+
+  it("destroy() can still clean up a binding stranded by that same config change", async () => {
+    const reg = new ProviderRegistry();
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"), {}, true));
+    const bindings = new InMemoryBindingStore();
+    const svc = new SandboxService({ registry: reg, bindings, credentials: noCreds });
+    const { sandbox } = await svc.create({ requiredCapabilities: [] }, { tenant: "t" });
+
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"), {}, false));
+
+    // Must NOT throw — this is exactly how a stranded binding gets cleaned up.
+    await svc.destroy(sandbox.id);
+    await expectCode(svc.get(sandbox.id), "NotFound"); // genuinely gone now, not just mismatched
   });
 });

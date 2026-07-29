@@ -244,6 +244,24 @@ export class SandboxService {
     const binding = await this.bindings.get(sandboxId);
     if (!binding) throw new OsrError("NotFound", `sandbox "${sandboxId}" not found`);
     const adapter = this.registry.get(binding.provider);
+    // The provider id ("vercel") is the same whether simulated or real, so a binding
+    // created under one registry config can silently resolve to the WRONG adapter if the
+    // config changes before the next op (e.g. --local mode rebuilds the registry fresh
+    // per process, and OSR_VERCEL_REAL flips between runs). Dispatching a simulated
+    // providerRef like "vercel-sim-1" to the real adapter doesn't error here — it reaches
+    // the vendor's real API, which then rejects it with its own confusing 404. Catch the
+    // mismatch explicitly so the failure is diagnosable instead of looking like a vendor
+    // API bug.
+    if (binding.simulated !== adapter.simulated) {
+      throw new OsrError(
+        "NotFound",
+        `sandbox "${sandboxId}" was created ${binding.simulated ? "simulated" : "live"} on "${binding.provider}", ` +
+          `but that provider is now registered ${adapter.simulated ? "simulated" : "live"} — the registry/credentials ` +
+          `config changed since this sandbox was created, so it can no longer be reached. This is not recoverable; destroy ` +
+          `the stale binding and create a new sandbox.`,
+        { provider: binding.provider, details: { sandboxId, bindingSimulated: binding.simulated, adapterSimulated: adapter.simulated } },
+      );
+    }
     const creds = await this.credentials.credentialsFor(binding.tenant, binding.provider);
     return { binding, adapter, creds };
   }
@@ -263,7 +281,18 @@ export class SandboxService {
   }
 
   async destroy(sandboxId: string): Promise<void> {
-    const { binding, adapter, creds } = await this.resolve(sandboxId);
+    const binding = await this.bindings.get(sandboxId);
+    if (!binding) throw new OsrError("NotFound", `sandbox "${sandboxId}" not found`);
+    const adapter = this.registry.get(binding.provider);
+    if (binding.simulated !== adapter.simulated) {
+      // Stale binding from a different registry config (see resolve()) — the current
+      // adapter can't meaningfully destroy a ref it never created, and the original
+      // instance is long gone regardless. destroy() is exactly how you clean this up:
+      // just drop the local binding rather than refusing to let it be removed.
+      await this.bindings.delete(sandboxId);
+      return;
+    }
+    const creds = await this.credentials.credentialsFor(binding.tenant, binding.provider);
     await adapter.destroy(binding.providerRef, creds);
     await this.bindings.delete(sandboxId);
   }
