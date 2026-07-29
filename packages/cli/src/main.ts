@@ -173,8 +173,18 @@ async function main(): Promise<void> {
       // otherwise be swallowed as an osr flag) — for the common case, anything after the
       // id is the command, no separator needed: `osr exec <id> ls -la` just works.
       const cmdArgs = rest.length > 0 ? rest : _.slice(2);
-      if (!id || cmdArgs.length === 0) {
-        throw new Error("usage: osr exec <id> <cmd> [args...]   (or: osr exec <id> -- <cmd> [args...] if <cmd> needs a --flag)");
+      if (!id) {
+        // The id is ALWAYS the first word after "exec" — even when using `--`, e.g.
+        // `osr exec <id> -- node --version`. A bare `osr exec -- ls` or `osr exec ls`
+        // (where "ls" gets consumed as the id, leaving no command) both land here.
+        throw new Error(
+          "usage: osr exec <id> <cmd> [args...]\n" +
+            "  missing <id> — it must come right after \"exec\", before any command or --.\n" +
+            "  run `osr ls` (or `osr --local ls`) to find a sandbox id.",
+        );
+      }
+      if (cmdArgs.length === 0) {
+        throw new Error(`usage: osr exec ${id} <cmd> [args...] — missing <cmd> to run`);
       }
       const sbx = await client.sandboxes.get(id);
       const res = await sbx.run(cmdArgs[0]!, cmdArgs.slice(1));
