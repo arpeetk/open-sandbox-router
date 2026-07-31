@@ -236,6 +236,33 @@ export class SandboxService {
 
   // ---- dispatch helpers ----------------------------------------------------
 
+  /**
+   * A binding can become unreachable in two distinct ways once the registry/credentials
+   * config changes after creation (e.g. --local mode rebuilds the registry fresh per
+   * process, and OSR_VERCEL_REAL flips between runs):
+   *   1. its provider isn't registered at all anymore (removed from OSR_PROVIDERS, etc.)
+   *   2. its provider IS registered, but under a different simulated/live config — the
+   *      provider id ("vercel") is identical either way, so dispatching a simulated
+   *      providerRef like "vercel-sim-1" to the real adapter doesn't error here, it reaches
+   *      the vendor's real API, which then rejects it with its own confusing 404.
+   * Single source of truth for both cases, so `resolve()`, `destroy()`, and
+   * `strandedBindings()` can never drift out of sync on what counts as stranded.
+   */
+  private strandedReason(binding: Binding): string | undefined {
+    if (!this.registry.has(binding.provider)) {
+      return `provider "${binding.provider}" is no longer registered at all`;
+    }
+    const adapter = this.registry.get(binding.provider);
+    if (binding.simulated !== adapter.simulated) {
+      return (
+        `was created ${binding.simulated ? "simulated" : "live"} on "${binding.provider}", but that provider is now ` +
+        `registered ${adapter.simulated ? "simulated" : "live"} — the registry/credentials config changed since ` +
+        `this sandbox was created, so it can no longer be reached`
+      );
+    }
+    return undefined;
+  }
+
   private async resolve(sandboxId: string): Promise<{
     binding: Binding;
     adapter: SandboxAdapter;
@@ -243,27 +270,29 @@ export class SandboxService {
   }> {
     const binding = await this.bindings.get(sandboxId);
     if (!binding) throw new OsrError("NotFound", `sandbox "${sandboxId}" not found`);
-    const adapter = this.registry.get(binding.provider);
-    // The provider id ("vercel") is the same whether simulated or real, so a binding
-    // created under one registry config can silently resolve to the WRONG adapter if the
-    // config changes before the next op (e.g. --local mode rebuilds the registry fresh
-    // per process, and OSR_VERCEL_REAL flips between runs). Dispatching a simulated
-    // providerRef like "vercel-sim-1" to the real adapter doesn't error here — it reaches
-    // the vendor's real API, which then rejects it with its own confusing 404. Catch the
-    // mismatch explicitly so the failure is diagnosable instead of looking like a vendor
-    // API bug.
-    if (binding.simulated !== adapter.simulated) {
+    const reason = this.strandedReason(binding);
+    if (reason) {
       throw new OsrError(
         "NotFound",
-        `sandbox "${sandboxId}" was created ${binding.simulated ? "simulated" : "live"} on "${binding.provider}", ` +
-          `but that provider is now registered ${adapter.simulated ? "simulated" : "live"} — the registry/credentials ` +
-          `config changed since this sandbox was created, so it can no longer be reached. This is not recoverable; destroy ` +
-          `the stale binding and create a new sandbox.`,
-        { provider: binding.provider, details: { sandboxId, bindingSimulated: binding.simulated, adapterSimulated: adapter.simulated } },
+        `sandbox "${sandboxId}" ${reason}. This is not recoverable; destroy the stale binding and create a new sandbox.`,
+        { provider: binding.provider, details: { sandboxId, bindingSimulated: binding.simulated } },
       );
     }
+    const adapter = this.registry.get(binding.provider);
     const creds = await this.credentials.credentialsFor(binding.tenant, binding.provider);
     return { binding, adapter, creds };
+  }
+
+  /** Bindings that `resolve()` would reject as stranded — surfaced proactively (e.g. by
+   * `osr doctor`) instead of only discovered when an op on one happens to fail. */
+  async strandedBindings(tenant: string): Promise<{ binding: Binding; reason: string }[]> {
+    const all = await this.bindings.list(tenant);
+    const result: { binding: Binding; reason: string }[] = [];
+    for (const binding of all) {
+      const reason = this.strandedReason(binding);
+      if (reason) result.push({ binding, reason });
+    }
+    return result;
   }
 
   async get(sandboxId: string): Promise<Sandbox> {
@@ -283,15 +312,15 @@ export class SandboxService {
   async destroy(sandboxId: string): Promise<void> {
     const binding = await this.bindings.get(sandboxId);
     if (!binding) throw new OsrError("NotFound", `sandbox "${sandboxId}" not found`);
-    const adapter = this.registry.get(binding.provider);
-    if (binding.simulated !== adapter.simulated) {
-      // Stale binding from a different registry config (see resolve()) — the current
-      // adapter can't meaningfully destroy a ref it never created, and the original
-      // instance is long gone regardless. destroy() is exactly how you clean this up:
-      // just drop the local binding rather than refusing to let it be removed.
+    if (this.strandedReason(binding)) {
+      // Stale binding (see resolve()) — the current registry config can't meaningfully
+      // destroy a ref it never created (or doesn't even recognize the provider anymore),
+      // and the original instance is long gone regardless. destroy() is exactly how you
+      // clean this up: just drop the local binding rather than refusing to remove it.
       await this.bindings.delete(sandboxId);
       return;
     }
+    const adapter = this.registry.get(binding.provider);
     const creds = await this.credentials.credentialsFor(binding.tenant, binding.provider);
     await adapter.destroy(binding.providerRef, creds);
     await this.bindings.delete(sandboxId);

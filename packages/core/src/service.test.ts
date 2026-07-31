@@ -377,4 +377,50 @@ describe("simulated flag", () => {
     await svc.destroy(sandbox.id);
     await expectCode(svc.get(sandbox.id), "NotFound"); // genuinely gone now, not just mismatched
   });
+
+  it("also treats a binding whose provider was removed from the registry entirely as stranded", async () => {
+    // A different root cause than a simulated/live flip (e.g. the provider was dropped
+    // from OSR_PROVIDERS) but the same symptom: the binding can no longer be reached.
+    // registry.get() throws NotFound for an unregistered id, so this must be caught
+    // explicitly rather than left to bubble up as an unrelated crash.
+    const reg = new ProviderRegistry();
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"), {}, true));
+    const bindings = new InMemoryBindingStore();
+    const svc = new SandboxService({ registry: reg, bindings, credentials: noCreds });
+    const { sandbox } = await svc.create({ requiredCapabilities: [] }, { tenant: "t" });
+
+    const emptyReg = new ProviderRegistry(); // "vercel" is no longer registered at all
+    const svc2 = new SandboxService({ registry: emptyReg, bindings, credentials: noCreds });
+
+    await expectCode(svc2.get(sandbox.id), "NotFound");
+    await svc2.destroy(sandbox.id); // still cleanable, same as the simulated-mismatch case
+    await expectCode(svc2.get(sandbox.id), "NotFound");
+  });
+
+  it("strandedBindings() surfaces both stranding reasons proactively, for both tenants only", async () => {
+    const reg = new ProviderRegistry();
+    reg.register(new LifecycleFakeAdapter(manifest("vercel"), {}, true));
+    reg.register(new LifecycleFakeAdapter(manifest("modal"), {}, true));
+    const bindings = new InMemoryBindingStore();
+    const svc = new SandboxService({ registry: reg, bindings, credentials: noCreds });
+
+    const healthy = await svc.create({ requiredCapabilities: [] }, { tenant: "t" });
+    const mismatched = await svc.create(
+      { requiredCapabilities: [], routing: { strategy: "pin:modal" } },
+      { tenant: "t" },
+    );
+    const otherTenant = await svc.create({ requiredCapabilities: [] }, { tenant: "other" });
+
+    // Flip "modal" real and drop "vercel" entirely.
+    const reg2 = new ProviderRegistry();
+    reg2.register(new LifecycleFakeAdapter(manifest("modal"), {}, false));
+    const svc2 = new SandboxService({ registry: reg2, bindings, credentials: noCreds });
+
+    const stranded = await svc2.strandedBindings("t");
+    const ids = stranded.map((s) => s.binding.sandboxId).sort();
+    expect(ids).toEqual([healthy.sandbox.id, mismatched.sandbox.id].sort());
+    expect(stranded.find((s) => s.binding.sandboxId === healthy.sandbox.id)?.reason).toMatch(/no longer registered/);
+    expect(stranded.find((s) => s.binding.sandboxId === mismatched.sandbox.id)?.reason).toMatch(/registered live/);
+    expect(stranded.some((s) => s.binding.sandboxId === otherTenant.sandbox.id)).toBe(false);
+  });
 });

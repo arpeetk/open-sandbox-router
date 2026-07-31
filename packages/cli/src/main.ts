@@ -3,15 +3,18 @@
  * mode local` — see resolveSettings). Talks to the same REST API the SDK uses.
  *
  * A `create` becomes the "current" sandbox automatically, so every command below can
- * drop the id — pass one explicitly any time to override:
+ * drop the id — pass one explicitly any time to override. Omitting the id ALWAYS needs
+ * `--` before the command itself, even when that command has no double-dash flags of
+ * its own — otherwise the first bare word after the command name is read as the id:
  *
  *   osr create --template python-3.12 --require runCode   # now current
- *   osr exec python -c "print(1+1)"          no id needed; no -- needed either ("-c" is single-dash)
- *   osr exec -- node --version                -- needed: no id given AND "--version" is a double-dash flag
+ *   osr exec -- python -c "print(1+1)"        no id + -- -> targets the current sandbox
+ *   osr exec sbx_abc123 python -c "print(1+1)"  explicit id -> no -- needed ("-c" is single-dash)
+ *   osr exec -- node --version                 -- also needed here ("--version" is double-dash)
  *   osr pause  /  osr resume                 (provider-dependent)
  *   osr snapshot                             -> prints "<provider>:<snapshotId>"
  *   osr create --from-snapshot modal:im-abc123   restore into a new sandbox (also becomes current)
- *   osr rm                                   destroys the current sandbox
+ *   osr rm                                   destroys the current sandbox (confirms first)
  *
  *   osr ls                                   * marks the current sandbox
  *   osr use <id>                              switch which sandbox is current
@@ -19,7 +22,7 @@
  *   osr config set mode local                 do this once instead of typing --local forever
  */
 
-import type { BindingStore, CapabilityName, CreateSandboxRequest, ProviderRegistry } from "@osr/core";
+import type { CapabilityName, CreateSandboxRequest, SandboxService } from "@osr/core";
 import { OSR, LocalOps } from "@osr/sdk";
 import {
   buildEmbeddedService,
@@ -32,7 +35,7 @@ import {
 } from "@osr/embed";
 
 /** Flags that never take a value (so `osr --local providers` parses correctly). */
-const BOOLEAN_FLAGS = new Set(["local", "gateway", "version", "help"]);
+const BOOLEAN_FLAGS = new Set(["local", "gateway", "version", "help", "yes"]);
 
 const DEFAULT_GATEWAY_URL = "http://localhost:8080";
 const PROBE_TIMEOUT_MS = 400;
@@ -54,7 +57,25 @@ const CREATE_FLAGS = [
   "memory",
   "from-snapshot",
 ];
-const COMMAND_FLAGS: Record<string, string[]> = { create: CREATE_FLAGS, plan: CREATE_FLAGS };
+const COMMAND_FLAGS: Record<string, string[]> = { create: CREATE_FLAGS, plan: CREATE_FLAGS, rm: ["yes"] };
+
+/** Every top-level command osr recognizes — checked before `resolveSettings()` runs so
+ * a typo'd command doesn't pay for (or trigger) the gateway auto-detect probe, and can't
+ * silently persist an "auto" mode decision to config for an invocation that did nothing. */
+const KNOWN_COMMANDS = new Set([
+  "providers",
+  "plan",
+  "create",
+  "ls",
+  "use",
+  "doctor",
+  "exec",
+  "rm",
+  "pause",
+  "resume",
+  "snapshot",
+  "config",
+]);
 
 /** Standard edit-distance, for suggesting the likely-intended flag on a typo. */
 function levenshtein(a: string, b: string): number {
@@ -299,6 +320,113 @@ function handleConfigCommand(args: string[], config: FileCliConfig): void {
   }
 }
 
+/**
+ * Reports resolved mode/tenant/url, env-file presence, per-provider simulated-vs-live
+ * status with a BYOK hint, and (local mode only) any stranded bindings — surfaced
+ * proactively via `SandboxService.strandedBindings()` rather than only discovered when
+ * an operation on one happens to fail.
+ */
+async function handleDoctorCommand(opts: {
+  mode: "local" | "gateway";
+  modeSource: "explicit" | "auto";
+  tenant: string;
+  url: string;
+  client: OSR;
+  localInternals: { service: SandboxService } | undefined;
+}): Promise<void> {
+  const { mode, modeSource, tenant, url, client, localInternals } = opts;
+  console.log(`mode:    ${mode}  (source: ${modeSource})`);
+  console.log(`tenant:  ${tenant}`);
+  console.log(`url:     ${url}${mode === "local" ? "  (unused in local mode)" : ""}`);
+
+  if (mode === "local") {
+    const files = envFileStatus();
+    console.log("\nenv files:");
+    console.log(`  .env.local   ${files.envLocal ? "found" : "not found"}`);
+    console.log(`  .env         ${files.env ? "found" : "not found"}`);
+  }
+
+  console.log("\nproviders:");
+  for (const p of await client.providers()) {
+    const status = p.simulated ? "[SIMULATED]" : "live       ";
+    let hint = "";
+    if (mode === "local") {
+      // Most providers' env-var prefix is just their id uppercased (matches
+      // EnvCredentialProvider's generic BYOK scan in @osr/embed), but Kubernetes
+      // uses the abbreviated OSR_K8S_* (see packages/embed/src/registry.ts) —
+      // override it here rather than report a variable name that does nothing.
+      const prefix = p.provider === "kubernetes" ? "OSR_K8S_" : `OSR_${p.provider.toUpperCase()}_`;
+      const keys = Object.keys(process.env).filter((k) => k.startsWith(prefix));
+      const realFlagSet = process.env[`${prefix}REAL`] === "1";
+      if (p.simulated && realFlagSet) {
+        hint = "  (REAL=1 is set but still simulated — check credentials, or this provider has no live adapter yet)";
+      } else if (p.simulated && keys.length > 0) {
+        hint = `  (found ${keys.join(", ")} but not ${prefix}REAL=1)`;
+      } else if (p.simulated) {
+        hint = `  (set ${prefix}REAL=1 + credentials to go live)`;
+      } else {
+        hint = keys.length > 0 ? `  (${keys.join(", ")})` : `  (no ${prefix}* vars — using ambient/default credentials)`;
+      }
+    }
+    console.log(`  ${p.provider.padEnd(12)} ${status}${hint}`);
+  }
+
+  if (mode === "local" && localInternals) {
+    const stranded = await localInternals.service.strandedBindings(tenant);
+    if (stranded.length > 0) {
+      console.log("\nstranded bindings (unreachable — registry/credentials config changed since creation):");
+      for (const { binding, reason } of stranded) {
+        console.log(`  ${binding.sandboxId}  (${binding.provider}) — ${reason}. Run \`osr rm ${binding.sandboxId}\` to clean up.`);
+      }
+    } else {
+      console.log("\nstranded bindings: none");
+    }
+  } else if (mode === "gateway") {
+    console.log("\n(env files, credential presence, and stranded-binding checks are local-mode only)");
+  }
+}
+
+/**
+ * Resolve the target sandbox id for exec/rm/pause/resume/snapshot: an explicit id
+ * always wins, otherwise fall back to the current sandbox set via `osr use`/`create`.
+ * Reports whether the id came from that fallback — `rm` uses it to decide whether to
+ * confirm before destroying an implicit target instead of one the caller actually typed.
+ */
+function requireId(
+  explicitId: string | undefined,
+  config: FileCliConfig,
+  tenant: string,
+  usage: string,
+): { id: string; fromCurrent: boolean } {
+  if (explicitId) return { id: explicitId, fromCurrent: false };
+  const current = config.currentSandbox(tenant);
+  if (!current) throw new Error(usage);
+  return { id: current, fromCurrent: true };
+}
+
+/**
+ * y/N prompt before destroying a sandbox the caller didn't name explicitly — the
+ * "current" sandbox is easy to lose track of across shells/sessions, so silently
+ * destroying whatever it happens to point at is a footgun. Refuses outright (rather
+ * than guessing) when stdin isn't a TTY; pass --yes to skip this in scripts.
+ */
+async function confirmDestroy(id: string): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    console.error(
+      `refusing to destroy the current sandbox (${id}) without confirmation in a non-interactive shell — pass --yes or an explicit id to skip this`,
+    );
+    return false;
+  }
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(`destroy current sandbox ${id}? [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
 function printHelp(): void {
   console.log(
     [
@@ -309,7 +437,8 @@ function printHelp(): void {
       "  ls                        list sandboxes (* marks the current one)",
       "  use [id]                  set (or show) the current sandbox for the commands below",
       "  exec [id] <cmd...>        run a command — id defaults to the current sandbox",
-      "  rm [id]                   destroy a sandbox — id defaults to the current sandbox",
+      "  rm [id]                   destroy a sandbox — confirms first when falling back to",
+      "                            the current sandbox (skip with --yes, or pass an id)",
       "  pause [id]                pause a sandbox (provider-dependent)",
       "  resume [id]               resume a paused sandbox",
       "  snapshot [id]             take a provider-native snapshot",
@@ -317,7 +446,10 @@ function printHelp(): void {
       "  doctor                    diagnose mode/credentials/provider setup",
       "",
       "Any [id] above can be omitted once `osr use <id>` (or a prior `osr create`) has set",
-      "a current sandbox — it's always overridable by passing an explicit id instead.",
+      "a current sandbox — it's always overridable by passing an explicit id instead. For",
+      "`exec`, omitting the id ALSO requires `--` before the command itself, e.g.",
+      "`osr exec -- ls -la` — without it, the first word after `exec` is read as the id",
+      "(so `osr exec ls` tries to look up a sandbox literally named \"ls\").",
       "",
       "modes:  gateway (talks to a server at --url/OSR_URL) or local (embeds the router",
       "        in-process, persists state to ~/.osr/bindings.json). With nothing set at",
@@ -326,7 +458,7 @@ function printHelp(): void {
       "",
       "flags: --local --gateway --template --name <n> --require <cap> --prefer <cap>",
       "       --strategy <s> --region <r> --isolation <lvl> --max-cost <usd> --order <p>",
-      "       --vcpu --memory --from-snapshot <provider>:<id> --url --tenant",
+      "       --vcpu --memory --from-snapshot <provider>:<id> --url --tenant --yes",
     ].join("\n"),
   );
 }
@@ -344,6 +476,12 @@ async function main(): Promise<void> {
     printHelp();
     return;
   }
+  if (!KNOWN_COMMANDS.has(cmd)) {
+    console.error(`osr: unknown command "${cmd}"`);
+    printHelp();
+    process.exitCode = 1;
+    return;
+  }
 
   const config = new FileCliConfig(defaultConfigPath());
 
@@ -355,18 +493,18 @@ async function main(): Promise<void> {
   const { tenant, url, mode, modeSource } = await resolveSettings(flags, config);
 
   let client: OSR;
-  // Only populated in local mode — doctor uses these for BYOK/stranded-binding checks
-  // that have no equivalent gateway REST endpoint to ask for remotely.
-  let localInternals: { registry: ProviderRegistry; bindings: BindingStore } | undefined;
+  // Only populated in local mode — doctor uses this for the stranded-binding check,
+  // which has no equivalent gateway REST endpoint to ask for remotely.
+  let localInternals: { service: SandboxService } | undefined;
   if (mode === "local") {
     // Embed the router in-process — no gateway needed. Bindings persist to disk so
     // session affinity survives across separate CLI invocations. Real providers (via
     // OSR_<PROVIDER>_REAL=1 in your env/.env.local) reconnect by their remote id.
     loadEnvFiles();
-    const { service, registry, bindings } = buildEmbeddedService({
+    const { service, registry } = buildEmbeddedService({
       bindings: new FileBindingStore(defaultStatePath()),
     });
-    localInternals = { registry, bindings };
+    localInternals = { service };
     client = new OSR({ ops: new LocalOps({ service, registry, tenant }) });
   } else {
     client = new OSR({ baseUrl: url, tenant });
@@ -426,65 +564,10 @@ async function main(): Promise<void> {
       break;
     }
     case "doctor": {
-      console.log(`mode:    ${mode}  (source: ${modeSource})`);
-      console.log(`tenant:  ${tenant}`);
-      console.log(`url:     ${url}${mode === "local" ? "  (unused in local mode)" : ""}`);
-
-      if (mode === "local") {
-        const files = envFileStatus();
-        console.log("\nenv files:");
-        console.log(`  .env.local   ${files.envLocal ? "found" : "not found"}`);
-        console.log(`  .env         ${files.env ? "found" : "not found"}`);
-      }
-
-      console.log("\nproviders:");
-      for (const p of await client.providers()) {
-        const status = p.simulated ? "[SIMULATED]" : "live       ";
-        let hint = "";
-        if (mode === "local") {
-          // Most providers' env-var prefix is just their id uppercased (matches
-          // EnvCredentialProvider's generic BYOK scan in @osr/embed), but Kubernetes
-          // uses the abbreviated OSR_K8S_* (see packages/embed/src/registry.ts) —
-          // override it here rather than report a variable name that does nothing.
-          const prefix = p.provider === "kubernetes" ? "OSR_K8S_" : `OSR_${p.provider.toUpperCase()}_`;
-          const keys = Object.keys(process.env).filter((k) => k.startsWith(prefix));
-          const realFlagSet = process.env[`${prefix}REAL`] === "1";
-          if (p.simulated && realFlagSet) {
-            hint = "  (REAL=1 is set but still simulated — check credentials, or this provider has no live adapter yet)";
-          } else if (p.simulated && keys.length > 0) {
-            hint = `  (found ${keys.join(", ")} but not ${prefix}REAL=1)`;
-          } else if (p.simulated) {
-            hint = `  (set ${prefix}REAL=1 + credentials to go live)`;
-          } else {
-            hint = keys.length > 0 ? `  (${keys.join(", ")})` : `  (no ${prefix}* vars — using ambient/default credentials)`;
-          }
-        }
-        console.log(`  ${p.provider.padEnd(12)} ${status}${hint}`);
-      }
-
-      if (mode === "local" && localInternals) {
-        const stranded = (await localInternals.bindings.list(tenant)).filter((b) => {
-          try {
-            return b.simulated !== localInternals!.registry.get(b.provider).simulated;
-          } catch {
-            return false; // provider no longer registered at all — a different problem
-          }
-        });
-        if (stranded.length > 0) {
-          console.log("\nstranded bindings (created under a different provider config, unreachable now):");
-          for (const b of stranded) {
-            console.log(`  ${b.sandboxId}  (${b.provider}, was ${b.simulated ? "simulated" : "live"}) — run \`osr rm ${b.sandboxId}\` to clean up`);
-          }
-        } else {
-          console.log("\nstranded bindings: none");
-        }
-      } else if (mode === "gateway") {
-        console.log("\n(env files, credential presence, and stranded-binding checks are local-mode only)");
-      }
+      await handleDoctorCommand({ mode, modeSource, tenant, url, client, localInternals });
       break;
     }
     case "exec": {
-      const explicitId = _[1];
       // `--` is only required when the command itself needs a `--foo` flag (which would
       // otherwise be swallowed as an osr flag) — for the common case, anything after the
       // id is the command, no separator needed: `osr exec <id> ls -la` just works.
@@ -494,14 +577,14 @@ async function main(): Promise<void> {
       // reinterpreted, so an existing typo doesn't silently start hitting a different
       // sandbox than before.
       const cmdArgs = rest.length > 0 ? rest : _.slice(2);
-      const id = explicitId ?? config.currentSandbox(tenant);
-      if (!id) {
-        throw new Error(
-          "usage: osr exec <id> <cmd> [args...]  (or: osr exec -- <cmd> [args...] to use the current sandbox)\n" +
-            "  no id given and no current sandbox set.\n" +
-            "  run `osr ls` to find one, or `osr use <id>` first.",
-        );
-      }
+      const { id } = requireId(
+        _[1],
+        config,
+        tenant,
+        "usage: osr exec <id> <cmd> [args...]  (or: osr exec -- <cmd> [args...] to use the current sandbox)\n" +
+          "  no id given and no current sandbox set.\n" +
+          "  run `osr ls` to find one, or `osr use <id>` first.",
+      );
       if (cmdArgs.length === 0) {
         throw new Error(`usage: osr exec ${id} <cmd> [args...] — missing <cmd> to run`);
       }
@@ -513,8 +596,19 @@ async function main(): Promise<void> {
       break;
     }
     case "rm": {
-      const id = _[1] ?? config.currentSandbox(tenant);
-      if (!id) throw new Error("usage: osr rm <id>  (or set one first with `osr use <id>`)");
+      const { id, fromCurrent } = requireId(
+        _[1],
+        config,
+        tenant,
+        "usage: osr rm <id>  (or set one first with `osr use <id>`)",
+      );
+      if (fromCurrent && !flags.yes) {
+        const ok = await confirmDestroy(id);
+        if (!ok) {
+          console.log("aborted — pass an explicit id, or --yes, to skip this confirmation");
+          break;
+        }
+      }
       // Destroy directly rather than `(await client.sandboxes.get(id)).destroy()` — get()
       // deliberately still fails on a stranded binding (see docs/GUIDE.md's note on the
       // `simulated` flag), and rm must be able to clean those up, not just healthy ones.
@@ -525,24 +619,26 @@ async function main(): Promise<void> {
       break;
     }
     case "pause": {
-      const id = _[1] ?? config.currentSandbox(tenant);
-      if (!id) throw new Error("usage: osr pause <id>  (or set one first with `osr use <id>`)");
+      const { id } = requireId(_[1], config, tenant, "usage: osr pause <id>  (or set one first with `osr use <id>`)");
       const sbx = await client.sandboxes.get(id);
       const updated = await sbx.pause();
       console.log(`paused ${id} (status: ${updated.status})`);
       break;
     }
     case "resume": {
-      const id = _[1] ?? config.currentSandbox(tenant);
-      if (!id) throw new Error("usage: osr resume <id>  (or set one first with `osr use <id>`)");
+      const { id } = requireId(_[1], config, tenant, "usage: osr resume <id>  (or set one first with `osr use <id>`)");
       const sbx = await client.sandboxes.get(id);
       const updated = await sbx.resume();
       console.log(`resumed ${id} (status: ${updated.status})`);
       break;
     }
     case "snapshot": {
-      const id = _[1] ?? config.currentSandbox(tenant);
-      if (!id) throw new Error("usage: osr snapshot <id>  (or set one first with `osr use <id>`)");
+      const { id } = requireId(
+        _[1],
+        config,
+        tenant,
+        "usage: osr snapshot <id>  (or set one first with `osr use <id>`)",
+      );
       const sbx = await client.sandboxes.get(id);
       const snap = await sbx.snapshot();
       console.log(`${snap.provider}:${snap.snapshotId}`);

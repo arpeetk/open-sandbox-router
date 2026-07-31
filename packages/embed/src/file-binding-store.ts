@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import type { Binding, BindingStore } from "@osr/core";
+import { JsonFileStore } from "./json-file-store.js";
 
 /**
  * A JSON-file-backed binding store for local mode. Because the CLI runs as a fresh
@@ -8,65 +7,58 @@ import type { Binding, BindingStore } from "@osr/core";
  * this persists it to disk so `osr create` in one shell and `osr exec` in another
  * dispatch to the same provider.
  *
- * Single-user, low-concurrency by design: each op reads, mutates, and rewrites the file.
+ * Mutations go through `JsonFileStore#readModifyWrite`, which holds an advisory file
+ * lock across the read-mutate-write sequence so two concurrent `osr` processes can't
+ * silently clobber each other's writes.
  */
 export class FileBindingStore implements BindingStore {
-  constructor(private readonly filePath: string) {}
+  private readonly store: JsonFileStore<Record<string, Binding>>;
 
-  private read(): Record<string, Binding> {
-    if (!existsSync(this.filePath)) return {};
-    try {
-      return JSON.parse(readFileSync(this.filePath, "utf8")) as Record<string, Binding>;
-    } catch {
-      return {};
-    }
-  }
-
-  private write(map: Record<string, Binding>): void {
-    mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(map, null, 2));
+  constructor(filePath: string) {
+    this.store = new JsonFileStore(filePath, () => ({}));
   }
 
   async create(binding: Binding): Promise<void> {
-    const map = this.read();
-    map[binding.sandboxId] = binding;
-    this.write(map);
+    this.store.readModifyWrite((map) => ({ ...map, [binding.sandboxId]: binding }));
   }
 
   async get(sandboxId: string): Promise<Binding | undefined> {
-    return this.read()[sandboxId];
+    return this.store.read()[sandboxId];
   }
 
   async findByIdempotencyKey(tenant: string, key: string): Promise<Binding | undefined> {
-    return Object.values(this.read()).find((b) => b.tenant === tenant && b.idempotencyKey === key);
+    return Object.values(this.store.read()).find((b) => b.tenant === tenant && b.idempotencyKey === key);
   }
 
   async findByName(tenant: string, name: string): Promise<Binding | undefined> {
-    return Object.values(this.read()).find((b) => b.tenant === tenant && b.name === name);
+    return Object.values(this.store.read()).find((b) => b.tenant === tenant && b.name === name);
   }
 
   async update(sandboxId: string, patch: Partial<Binding>): Promise<Binding> {
-    const map = this.read();
-    const cur = map[sandboxId];
-    if (!cur) throw new Error(`binding ${sandboxId} not found`);
-    const next = { ...cur, ...patch, lastActiveAt: new Date().toISOString() };
-    map[sandboxId] = next;
-    this.write(map);
-    return next;
+    let updated: Binding | undefined;
+    this.store.readModifyWrite((map) => {
+      const cur = map[sandboxId];
+      if (!cur) throw new Error(`binding ${sandboxId} not found`);
+      updated = { ...cur, ...patch, lastActiveAt: new Date().toISOString() };
+      return { ...map, [sandboxId]: updated };
+    });
+    return updated!;
   }
 
   async delete(sandboxId: string): Promise<void> {
-    const map = this.read();
-    delete map[sandboxId];
-    this.write(map);
+    this.store.readModifyWrite((map) => {
+      const next = { ...map };
+      delete next[sandboxId];
+      return next;
+    });
   }
 
   async list(tenant: string): Promise<Binding[]> {
-    return Object.values(this.read()).filter((b) => b.tenant === tenant);
+    return Object.values(this.store.read()).filter((b) => b.tenant === tenant);
   }
 
   async expired(now = new Date()): Promise<Binding[]> {
     const t = now.getTime();
-    return Object.values(this.read()).filter((b) => b.expiresAt && Date.parse(b.expiresAt) < t);
+    return Object.values(this.store.read()).filter((b) => b.expiresAt && Date.parse(b.expiresAt) < t);
   }
 }

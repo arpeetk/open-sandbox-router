@@ -1,6 +1,7 @@
 export { buildRegistry, type BuildRegistryOptions } from "./registry.js";
 export { EnvCredentialProvider } from "./credentials.js";
 export { FileBindingStore } from "./file-binding-store.js";
+export { JsonFileStore } from "./json-file-store.js";
 export { loadEnvFile, loadEnvFiles, envFileStatus, defaultStatePath, defaultConfigPath, stateDir } from "./env.js";
 export { FileCliConfig, type CliConfig } from "./cli-config.js";
 export {
