@@ -19,6 +19,12 @@ export function loadEnvFiles(dir = process.cwd()): void {
   loadEnvFile(join(dir, ".env"));
 }
 
+/** Which of .env.local / .env exist in a directory — for `osr doctor` to report, since
+ * loadEnvFiles() itself is silent about what it found. */
+export function envFileStatus(dir = process.cwd()): { envLocal: boolean; env: boolean } {
+  return { envLocal: existsSync(join(dir, ".env.local")), env: existsSync(join(dir, ".env")) };
+}
+
 /**
  * Directory holding all local-mode state (bindings, CLI config). Override with
  * OSR_STATE_DIR; defaults to ~/.osr.

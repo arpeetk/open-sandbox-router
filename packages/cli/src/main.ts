@@ -19,13 +19,14 @@
  *   osr config set mode local                 do this once instead of typing --local forever
  */
 
-import type { CapabilityName, CreateSandboxRequest } from "@osr/core";
+import type { BindingStore, CapabilityName, CreateSandboxRequest, ProviderRegistry } from "@osr/core";
 import { OSR, LocalOps } from "@osr/sdk";
 import {
   buildEmbeddedService,
   FileBindingStore,
   FileCliConfig,
   loadEnvFiles,
+  envFileStatus,
   defaultStatePath,
   defaultConfigPath,
 } from "@osr/embed";
@@ -250,6 +251,7 @@ function printHelp(): void {
       "  resume [id]               resume a paused sandbox",
       "  snapshot [id]             take a provider-native snapshot",
       "  config <command>          view/persist default mode, url, tenant — see `osr config`",
+      "  doctor                    diagnose mode/credentials/provider setup",
       "",
       "Any [id] above can be omitted once `osr use <id>` (or a prior `osr create`) has set",
       "a current sandbox — it's always overridable by passing an explicit id instead.",
@@ -286,17 +288,21 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { tenant, url, mode } = await resolveSettings(flags, config);
+  const { tenant, url, mode, modeSource } = await resolveSettings(flags, config);
 
   let client: OSR;
+  // Only populated in local mode — doctor uses these for BYOK/stranded-binding checks
+  // that have no equivalent gateway REST endpoint to ask for remotely.
+  let localInternals: { registry: ProviderRegistry; bindings: BindingStore } | undefined;
   if (mode === "local") {
     // Embed the router in-process — no gateway needed. Bindings persist to disk so
     // session affinity survives across separate CLI invocations. Real providers (via
     // OSR_<PROVIDER>_REAL=1 in your env/.env.local) reconnect by their remote id.
     loadEnvFiles();
-    const { service, registry } = buildEmbeddedService({
+    const { service, registry, bindings } = buildEmbeddedService({
       bindings: new FileBindingStore(defaultStatePath()),
     });
+    localInternals = { registry, bindings };
     client = new OSR({ ops: new LocalOps({ service, registry, tenant }) });
   } else {
     client = new OSR({ baseUrl: url, tenant });
@@ -353,6 +359,64 @@ async function main(): Promise<void> {
       await client.sandboxes.get(id); // fail fast on a typo before persisting
       config.setCurrentSandbox(tenant, id);
       console.log(`using ${id}`);
+      break;
+    }
+    case "doctor": {
+      console.log(`mode:    ${mode}  (source: ${modeSource})`);
+      console.log(`tenant:  ${tenant}`);
+      console.log(`url:     ${url}${mode === "local" ? "  (unused in local mode)" : ""}`);
+
+      if (mode === "local") {
+        const files = envFileStatus();
+        console.log("\nenv files:");
+        console.log(`  .env.local   ${files.envLocal ? "found" : "not found"}`);
+        console.log(`  .env         ${files.env ? "found" : "not found"}`);
+      }
+
+      console.log("\nproviders:");
+      for (const p of await client.providers()) {
+        const status = p.simulated ? "[SIMULATED]" : "live       ";
+        let hint = "";
+        if (mode === "local") {
+          // Most providers' env-var prefix is just their id uppercased (matches
+          // EnvCredentialProvider's generic BYOK scan in @osr/embed), but Kubernetes
+          // uses the abbreviated OSR_K8S_* (see packages/embed/src/registry.ts) —
+          // override it here rather than report a variable name that does nothing.
+          const prefix = p.provider === "kubernetes" ? "OSR_K8S_" : `OSR_${p.provider.toUpperCase()}_`;
+          const keys = Object.keys(process.env).filter((k) => k.startsWith(prefix));
+          const realFlagSet = process.env[`${prefix}REAL`] === "1";
+          if (p.simulated && realFlagSet) {
+            hint = "  (REAL=1 is set but still simulated — check credentials, or this provider has no live adapter yet)";
+          } else if (p.simulated && keys.length > 0) {
+            hint = `  (found ${keys.join(", ")} but not ${prefix}REAL=1)`;
+          } else if (p.simulated) {
+            hint = `  (set ${prefix}REAL=1 + credentials to go live)`;
+          } else {
+            hint = keys.length > 0 ? `  (${keys.join(", ")})` : `  (no ${prefix}* vars — using ambient/default credentials)`;
+          }
+        }
+        console.log(`  ${p.provider.padEnd(12)} ${status}${hint}`);
+      }
+
+      if (mode === "local" && localInternals) {
+        const stranded = (await localInternals.bindings.list(tenant)).filter((b) => {
+          try {
+            return b.simulated !== localInternals!.registry.get(b.provider).simulated;
+          } catch {
+            return false; // provider no longer registered at all — a different problem
+          }
+        });
+        if (stranded.length > 0) {
+          console.log("\nstranded bindings (created under a different provider config, unreachable now):");
+          for (const b of stranded) {
+            console.log(`  ${b.sandboxId}  (${b.provider}, was ${b.simulated ? "simulated" : "live"}) — run \`osr rm ${b.sandboxId}\` to clean up`);
+          }
+        } else {
+          console.log("\nstranded bindings: none");
+        }
+      } else if (mode === "gateway") {
+        console.log("\n(env files, credential presence, and stranded-binding checks are local-mode only)");
+      }
       break;
     }
     case "exec": {
