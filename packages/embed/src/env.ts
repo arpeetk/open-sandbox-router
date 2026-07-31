@@ -20,10 +20,19 @@ export function loadEnvFiles(dir = process.cwd()): void {
 }
 
 /**
- * Where local-mode state (the sandbox->provider binding file) lives.
- * Override the directory with OSR_STATE_DIR; defaults to ~/.osr.
+ * Directory holding all local-mode state (bindings, CLI config). Override with
+ * OSR_STATE_DIR; defaults to ~/.osr.
  */
+export function stateDir(): string {
+  return process.env.OSR_STATE_DIR ?? join(homedir(), ".osr");
+}
+
+/** Where local-mode state (the sandbox->provider binding file) lives. */
 export function defaultStatePath(): string {
-  const dir = process.env.OSR_STATE_DIR ?? join(homedir(), ".osr");
-  return join(dir, "bindings.json");
+  return join(stateDir(), "bindings.json");
+}
+
+/** Where the CLI's persistent config (mode, url, tenant, current sandbox) lives. */
+export function defaultConfigPath(): string {
+  return join(stateDir(), "config.json");
 }

@@ -17,10 +17,20 @@
 
 import type { CapabilityName, CreateSandboxRequest } from "@osr/core";
 import { OSR, LocalOps } from "@osr/sdk";
-import { buildEmbeddedService, FileBindingStore, loadEnvFiles, defaultStatePath } from "@osr/embed";
+import {
+  buildEmbeddedService,
+  FileBindingStore,
+  FileCliConfig,
+  loadEnvFiles,
+  defaultStatePath,
+  defaultConfigPath,
+} from "@osr/embed";
 
 /** Flags that never take a value (so `osr --local providers` parses correctly). */
-const BOOLEAN_FLAGS = new Set(["local", "version", "help"]);
+const BOOLEAN_FLAGS = new Set(["local", "gateway", "version", "help"]);
+
+const DEFAULT_GATEWAY_URL = "http://localhost:8080";
+const PROBE_TIMEOUT_MS = 400;
 
 interface Parsed {
   _: string[];
@@ -103,6 +113,151 @@ function buildCreateRequest(flags: Parsed["flags"]): CreateSandboxRequest {
 
 const VERSION = "0.1.0";
 
+interface Settings {
+  tenant: string;
+  url: string;
+  mode: "local" | "gateway";
+  modeSource: "explicit" | "auto";
+}
+
+/** Mode from a CLI flag or env var — the highest-precedence, always-explicit source. */
+function explicitMode(flags: Parsed["flags"]): "local" | "gateway" | undefined {
+  if (flags.local) return "local";
+  if (flags.gateway) return "gateway";
+  if (process.env.OSR_LOCAL === "1") return "local";
+  if (process.env.OSR_MODE === "local") return "local";
+  if (process.env.OSR_MODE === "gateway") return "gateway";
+  return undefined;
+}
+
+/** Fast, short-timeout reachability check — used only when nothing else has decided
+ * a mode, and only once (the result gets persisted so this never runs again). */
+async function probeGateway(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}/healthz`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve mode/url/tenant with precedence: CLI flag > env var > config file > built-in
+ * default. If nothing at all has decided a mode, probe the gateway once and persist
+ * whichever way it goes (`modeSource: "auto"`) so this never re-runs on a later
+ * invocation — a cold gateway shouldn't tax every single command with a network probe.
+ */
+async function resolveSettings(flags: Parsed["flags"], config: FileCliConfig): Promise<Settings> {
+  const cfg = config.read();
+  const tenant =
+    (typeof flags.tenant === "string" ? flags.tenant : undefined) ?? process.env.OSR_TENANT ?? cfg.tenant ?? "default";
+  const url =
+    (typeof flags.url === "string" ? flags.url : undefined) ?? process.env.OSR_URL ?? cfg.url ?? DEFAULT_GATEWAY_URL;
+
+  const explicit = explicitMode(flags);
+  if (explicit) return { tenant, url, mode: explicit, modeSource: "explicit" };
+  if (cfg.mode) return { tenant, url, mode: cfg.mode, modeSource: cfg.modeSource ?? "explicit" };
+
+  const reachable = await probeGateway(url);
+  const mode: "local" | "gateway" = reachable ? "gateway" : "local";
+  config.update({ mode, modeSource: "auto" });
+  if (!reachable) {
+    console.error(
+      `(no gateway at ${url} — using local mode; run \`osr config set mode gateway\` to always use a gateway)`,
+    );
+  }
+  return { tenant, url, mode, modeSource: "auto" };
+}
+
+const CONFIG_KEYS = ["mode", "url", "tenant"] as const;
+type ConfigKey = (typeof CONFIG_KEYS)[number];
+
+function handleConfigCommand(args: string[], config: FileCliConfig): void {
+  const [sub, key, value] = args;
+
+  const requireKey = (k: string | undefined): ConfigKey => {
+    if (!k || !(CONFIG_KEYS as readonly string[]).includes(k)) {
+      throw new Error(`unknown config key "${k ?? ""}" (expected one of: ${CONFIG_KEYS.join(", ")})`);
+    }
+    return k as ConfigKey;
+  };
+
+  switch (sub) {
+    case "set": {
+      const k = requireKey(key);
+      if (value === undefined) throw new Error(`usage: osr config set ${k} <value>`);
+      if (k === "mode") {
+        if (value !== "local" && value !== "gateway") {
+          throw new Error(`mode must be "local" or "gateway", got "${value}"`);
+        }
+        config.update({ mode: value, modeSource: "explicit" });
+      } else if (k === "url") {
+        config.update({ url: value });
+      } else {
+        config.update({ tenant: value });
+      }
+      console.log(`set ${k} = ${value}`);
+      break;
+    }
+    case "get": {
+      const cfg = config.read();
+      if (key) {
+        const k = requireKey(key);
+        console.log(cfg[k] ?? "(unset)");
+      } else {
+        console.log(JSON.stringify(cfg, null, 2));
+      }
+      break;
+    }
+    case "unset": {
+      const k = requireKey(key);
+      config.unset(k);
+      console.log(`unset ${k}`);
+      break;
+    }
+    default:
+      console.log(
+        [
+          "osr config <command>",
+          "  set <mode|url|tenant> <value>   persist a default (e.g. `osr config set mode local`)",
+          "  get [key]                        show current config, or one key",
+          "  unset <key>                      clear a key (unsetting mode re-enables auto-detect)",
+          "",
+          `config file: ${defaultConfigPath()}`,
+        ].join("\n"),
+      );
+  }
+}
+
+function printHelp(): void {
+  console.log(
+    [
+      "osr <command>",
+      "  providers                 list providers + capabilities",
+      "  plan     [flags]          dry-run routing",
+      "  create   [flags]          create a sandbox",
+      "  ls                        list sandboxes",
+      "  exec <id> <cmd...>        run a command (add -- before it only if it has a --flag)",
+      "  rm <id>                   destroy a sandbox",
+      "  pause <id>                pause a sandbox (provider-dependent)",
+      "  resume <id>               resume a paused sandbox",
+      "  snapshot <id>             take a provider-native snapshot",
+      "  config <command>          view/persist default mode, url, tenant — see `osr config`",
+      "",
+      "modes:  gateway (talks to a server at --url/OSR_URL) or local (embeds the router",
+      "        in-process, persists state to ~/.osr/bindings.json). With nothing set at",
+      "        all, the first run auto-detects and remembers its choice — no flag needed",
+      "        after that. Force one persistently: `osr config set mode local`.",
+      "",
+      "flags: --local --gateway --template --name <n> --require <cap> --prefer <cap>",
+      "       --strategy <s> --region <r> --isolation <lvl> --max-cost <usd> --order <p>",
+      "       --vcpu --memory --from-snapshot <provider>:<id> --url --tenant",
+    ].join("\n"),
+  );
+}
+
 async function main(): Promise<void> {
   const { _, flags, rest } = parseArgs(process.argv.slice(2));
   const cmd = _[0];
@@ -111,12 +266,22 @@ async function main(): Promise<void> {
     console.log(`osr ${VERSION}`);
     return;
   }
+  if (flags.help || !cmd) {
+    printHelp();
+    return;
+  }
 
-  const tenant = typeof flags.tenant === "string" ? flags.tenant : (process.env.OSR_TENANT ?? "default");
-  const local = Boolean(flags.local) || process.env.OSR_LOCAL === "1" || process.env.OSR_MODE === "local";
+  const config = new FileCliConfig(defaultConfigPath());
+
+  if (cmd === "config") {
+    handleConfigCommand(_.slice(1), config);
+    return;
+  }
+
+  const { tenant, url, mode } = await resolveSettings(flags, config);
 
   let client: OSR;
-  if (local) {
+  if (mode === "local") {
     // Embed the router in-process — no gateway needed. Bindings persist to disk so
     // session affinity survives across separate CLI invocations. Real providers (via
     // OSR_<PROVIDER>_REAL=1 in your env/.env.local) reconnect by their remote id.
@@ -126,10 +291,7 @@ async function main(): Promise<void> {
     });
     client = new OSR({ ops: new LocalOps({ service, registry, tenant }) });
   } else {
-    client = new OSR({
-      baseUrl: typeof flags.url === "string" ? flags.url : process.env.OSR_URL,
-      tenant,
-    });
+    client = new OSR({ baseUrl: url, tenant });
   }
 
   switch (cmd) {
@@ -229,27 +391,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.log(
-        [
-          "osr <command>",
-          "  providers                 list providers + capabilities",
-          "  plan     [flags]          dry-run routing",
-          "  create   [flags]          create a sandbox",
-          "  ls                        list sandboxes",
-          "  exec <id> <cmd...>        run a command (add -- before it only if it has a --flag)",
-          "  rm <id>                   destroy a sandbox",
-          "  pause <id>                pause a sandbox (provider-dependent)",
-          "  resume <id>               resume a paused sandbox",
-          "  snapshot <id>             take a provider-native snapshot",
-          "",
-          "modes:  default talks to a gateway (OSR_URL); --local embeds the router",
-          "        in-process (no gateway) and persists state to ~/.osr/bindings.json",
-          "",
-          "flags: --local --template --name <n> --require <cap> --prefer <cap> --strategy <s>",
-          "       --region <r> --isolation <lvl> --max-cost <usd> --order <p> --vcpu --memory",
-          "       --from-snapshot <provider>:<id> --url --tenant",
-        ].join("\n"),
-      );
+      printHelp();
   }
 }
 
