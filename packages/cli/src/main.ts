@@ -37,6 +37,69 @@ const BOOLEAN_FLAGS = new Set(["local", "gateway", "version", "help"]);
 const DEFAULT_GATEWAY_URL = "http://localhost:8080";
 const PROBE_TIMEOUT_MS = 400;
 
+/** Accepted on every command, regardless of what it does. */
+const GLOBAL_FLAGS = ["local", "gateway", "url", "tenant", "version", "help"];
+/** Everything buildCreateRequest() reads — shared by `create` and `plan`. */
+const CREATE_FLAGS = [
+  "template",
+  "name",
+  "require",
+  "prefer",
+  "strategy",
+  "region",
+  "isolation",
+  "max-cost",
+  "order",
+  "vcpu",
+  "memory",
+  "from-snapshot",
+];
+const COMMAND_FLAGS: Record<string, string[]> = { create: CREATE_FLAGS, plan: CREATE_FLAGS };
+
+/** Standard edit-distance, for suggesting the likely-intended flag on a typo. */
+function levenshtein(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i]![0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0]![j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i]![j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1]![j - 1]!
+          : 1 + Math.min(dp[i - 1]![j]!, dp[i]![j - 1]!, dp[i - 1]![j - 1]!);
+    }
+  }
+  return dp[a.length]![b.length]!;
+}
+
+/**
+ * A warning, never a hard failure — parseArgs is deliberately generic (exec's trailing
+ * args legitimately contain flags OSR doesn't own), so an unrecognized --foo could be
+ * a genuine typo or could be intentional passthrough. Print a best-effort suggestion
+ * and let execution continue exactly as it already did.
+ */
+function warnUnknownFlags(flags: Parsed["flags"], cmd: string | undefined): void {
+  const allowed = new Set([...GLOBAL_FLAGS, ...(cmd ? (COMMAND_FLAGS[cmd] ?? []) : [])]);
+  for (const key of Object.keys(flags)) {
+    if (allowed.has(key)) continue;
+    let best: string | undefined;
+    let bestDist = Infinity;
+    for (const candidate of allowed) {
+      const d = levenshtein(key, candidate);
+      if (d < bestDist) {
+        bestDist = d;
+        best = candidate;
+      }
+    }
+    const context = cmd ? ` for "${cmd}"` : "";
+    if (best && bestDist <= 3) {
+      console.error(`note: --${key} is not a recognized flag${context} — did you mean --${best}?`);
+    } else {
+      console.error(`note: --${key} is not a recognized flag${context}`);
+    }
+  }
+}
+
 interface Parsed {
   _: string[];
   flags: Record<string, string | boolean | string[]>;
@@ -271,6 +334,7 @@ function printHelp(): void {
 async function main(): Promise<void> {
   const { _, flags, rest } = parseArgs(process.argv.slice(2));
   const cmd = _[0];
+  warnUnknownFlags(flags, cmd);
 
   if (flags.version || cmd === "version") {
     console.log(`osr ${VERSION}`);
