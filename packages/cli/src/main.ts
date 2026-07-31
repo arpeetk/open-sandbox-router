@@ -1,18 +1,22 @@
 /**
- * `osr` — a thin CLI over the OSR gateway (or embedded in-process via --local). Talks to
- * the same REST API the SDK uses.
+ * `osr` — a thin CLI over the OSR gateway (or embedded in-process, once `osr config set
+ * mode local` — see resolveSettings). Talks to the same REST API the SDK uses.
  *
- *   osr providers                            list registered providers + capabilities
- *   osr plan --require runCode --strategy cost   dry-run routing for a create request
- *   osr create --template python-3.12 --require runCode
+ * A `create` becomes the "current" sandbox automatically, so every command below can
+ * drop the id — pass one explicitly any time to override:
+ *
+ *   osr create --template python-3.12 --require runCode   # now current
+ *   osr exec python -c "print(1+1)"          no id needed; no -- needed either ("-c" is single-dash)
+ *   osr exec -- node --version                -- needed: no id given AND "--version" is a double-dash flag
+ *   osr pause  /  osr resume                 (provider-dependent)
+ *   osr snapshot                             -> prints "<provider>:<snapshotId>"
+ *   osr create --from-snapshot modal:im-abc123   restore into a new sandbox (also becomes current)
+ *   osr rm                                   destroys the current sandbox
+ *
+ *   osr ls                                   * marks the current sandbox
+ *   osr use <id>                              switch which sandbox is current
  *   osr create --name my-workspace --template node-20   # get-or-create by stable name
- *   osr ls
- *   osr exec <id> python -c "print(1+1)"     (no -- needed — "-c" is single-dash)
- *   osr exec <id> -- node --version          (-- needed: "--version" is a double-dash flag)
- *   osr pause <id>  /  osr resume <id>       (provider-dependent)
- *   osr snapshot <id>                        -> prints "<provider>:<snapshotId>"
- *   osr create --from-snapshot modal:im-abc123   restore a new sandbox from a snapshot
- *   osr rm <id>
+ *   osr config set mode local                 do this once instead of typing --local forever
  */
 
 import type { CapabilityName, CreateSandboxRequest } from "@osr/core";
@@ -237,14 +241,18 @@ function printHelp(): void {
       "osr <command>",
       "  providers                 list providers + capabilities",
       "  plan     [flags]          dry-run routing",
-      "  create   [flags]          create a sandbox",
-      "  ls                        list sandboxes",
-      "  exec <id> <cmd...>        run a command (add -- before it only if it has a --flag)",
-      "  rm <id>                   destroy a sandbox",
-      "  pause <id>                pause a sandbox (provider-dependent)",
-      "  resume <id>               resume a paused sandbox",
-      "  snapshot <id>             take a provider-native snapshot",
+      "  create   [flags]          create a sandbox (becomes the current one — see `use`)",
+      "  ls                        list sandboxes (* marks the current one)",
+      "  use [id]                  set (or show) the current sandbox for the commands below",
+      "  exec [id] <cmd...>        run a command — id defaults to the current sandbox",
+      "  rm [id]                   destroy a sandbox — id defaults to the current sandbox",
+      "  pause [id]                pause a sandbox (provider-dependent)",
+      "  resume [id]               resume a paused sandbox",
+      "  snapshot [id]             take a provider-native snapshot",
       "  config <command>          view/persist default mode, url, tenant — see `osr config`",
+      "",
+      "Any [id] above can be omitted once `osr use <id>` (or a prior `osr create`) has set",
+      "a current sandbox — it's always overridable by passing an explicit id instead.",
       "",
       "modes:  gateway (talks to a server at --url/OSR_URL) or local (embeds the router",
       "        in-process, persists state to ~/.osr/bindings.json). With nothing set at",
@@ -319,30 +327,51 @@ async function main(): Promise<void> {
       if (sbx.attempts.length > 1) {
         console.log(`  failover path: ${sbx.attempts.map((a) => a.provider).join(" -> ")}`);
       }
+      // The sandbox you just made is almost always the one you want next — become
+      // "current" so exec/rm/pause/etc. don't need the id repeated. Still fully
+      // overridable: an explicit id on any later command always wins.
+      config.setCurrentSandbox(tenant, sbx.id);
       break;
     }
     case "ls": {
       const list = await client.sandboxes.list();
+      const current = config.currentSandbox(tenant);
       for (const s of list) {
         const tag = s.simulated ? " [SIMULATED]" : "";
-        console.log(`${s.id}  ${s.provider.padEnd(12)} ${s.status}${tag}`);
+        const marker = s.id === current ? "* " : "  ";
+        console.log(`${marker}${s.id}  ${s.provider.padEnd(12)} ${s.status}${tag}`);
       }
       break;
     }
-    case "exec": {
+    case "use": {
       const id = _[1];
+      if (!id) {
+        const current = config.currentSandbox(tenant);
+        console.log(current ?? "no current sandbox set — usage: osr use <id>");
+        break;
+      }
+      await client.sandboxes.get(id); // fail fast on a typo before persisting
+      config.setCurrentSandbox(tenant, id);
+      console.log(`using ${id}`);
+      break;
+    }
+    case "exec": {
+      const explicitId = _[1];
       // `--` is only required when the command itself needs a `--foo` flag (which would
       // otherwise be swallowed as an osr flag) — for the common case, anything after the
       // id is the command, no separator needed: `osr exec <id> ls -la` just works.
+      // It's ALSO how you target the current sandbox with no id at all: `osr exec --
+      // ls` (id omitted, `--` used) falls back to `osr use`'s current sandbox. A bare
+      // `osr exec ls` (no --) still treats "ls" as the id, unchanged — deliberately not
+      // reinterpreted, so an existing typo doesn't silently start hitting a different
+      // sandbox than before.
       const cmdArgs = rest.length > 0 ? rest : _.slice(2);
+      const id = explicitId ?? config.currentSandbox(tenant);
       if (!id) {
-        // The id is ALWAYS the first word after "exec" — even when using `--`, e.g.
-        // `osr exec <id> -- node --version`. A bare `osr exec -- ls` or `osr exec ls`
-        // (where "ls" gets consumed as the id, leaving no command) both land here.
         throw new Error(
-          "usage: osr exec <id> <cmd> [args...]\n" +
-            "  missing <id> — it must come right after \"exec\", before any command or --.\n" +
-            "  run `osr ls` (or `osr --local ls`) to find a sandbox id.",
+          "usage: osr exec <id> <cmd> [args...]  (or: osr exec -- <cmd> [args...] to use the current sandbox)\n" +
+            "  no id given and no current sandbox set.\n" +
+            "  run `osr ls` to find one, or `osr use <id>` first.",
         );
       }
       if (cmdArgs.length === 0) {
@@ -356,34 +385,36 @@ async function main(): Promise<void> {
       break;
     }
     case "rm": {
-      const id = _[1];
-      if (!id) throw new Error("usage: osr rm <id>");
+      const id = _[1] ?? config.currentSandbox(tenant);
+      if (!id) throw new Error("usage: osr rm <id>  (or set one first with `osr use <id>`)");
       // Destroy directly rather than `(await client.sandboxes.get(id)).destroy()` — get()
       // deliberately still fails on a stranded binding (see docs/GUIDE.md's note on the
       // `simulated` flag), and rm must be able to clean those up, not just healthy ones.
       await client.ops.destroy(id);
       console.log(`destroyed ${id}`);
+      // Don't leave "current" pointing at a sandbox that no longer exists.
+      if (config.currentSandbox(tenant) === id) config.clearCurrentSandbox(tenant);
       break;
     }
     case "pause": {
-      const id = _[1];
-      if (!id) throw new Error("usage: osr pause <id>");
+      const id = _[1] ?? config.currentSandbox(tenant);
+      if (!id) throw new Error("usage: osr pause <id>  (or set one first with `osr use <id>`)");
       const sbx = await client.sandboxes.get(id);
       const updated = await sbx.pause();
       console.log(`paused ${id} (status: ${updated.status})`);
       break;
     }
     case "resume": {
-      const id = _[1];
-      if (!id) throw new Error("usage: osr resume <id>");
+      const id = _[1] ?? config.currentSandbox(tenant);
+      if (!id) throw new Error("usage: osr resume <id>  (or set one first with `osr use <id>`)");
       const sbx = await client.sandboxes.get(id);
       const updated = await sbx.resume();
       console.log(`resumed ${id} (status: ${updated.status})`);
       break;
     }
     case "snapshot": {
-      const id = _[1];
-      if (!id) throw new Error("usage: osr snapshot <id>");
+      const id = _[1] ?? config.currentSandbox(tenant);
+      if (!id) throw new Error("usage: osr snapshot <id>  (or set one first with `osr use <id>`)");
       const sbx = await client.sandboxes.get(id);
       const snap = await sbx.snapshot();
       console.log(`${snap.provider}:${snap.snapshotId}`);

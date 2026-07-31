@@ -50,6 +50,20 @@ describe("FileCliConfig", () => {
     expect(cfg.currentSandbox("t2")).toBe("sbx_2"); // untouched
   });
 
+  it("clearCurrentSandbox only clears the given tenant, never the whole map", () => {
+    const cfg = new FileCliConfig(file);
+    cfg.setCurrentSandbox("ta", "sbx_a");
+    cfg.setCurrentSandbox("tb", "sbx_b");
+    cfg.clearCurrentSandbox("ta");
+    expect(cfg.currentSandbox("ta")).toBeUndefined();
+    expect(cfg.currentSandbox("tb")).toBe("sbx_b"); // untouched
+  });
+
+  it("clearCurrentSandbox is a no-op when there's no current map yet", () => {
+    const empty = new FileCliConfig(join(dir, "no-current-yet.json"));
+    expect(() => empty.clearCurrentSandbox("t1")).not.toThrow();
+  });
+
   it("swallows a corrupt file rather than throwing", () => {
     const corrupt = join(dir, "corrupt.json");
     writeFileSync(corrupt, "{not json");

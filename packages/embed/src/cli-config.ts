@@ -61,4 +61,13 @@ export class FileCliConfig {
   currentSandbox(tenant: string): string | undefined {
     return this.read().current?.[tenant];
   }
+
+  /** Clear only this tenant's current sandbox — never the whole `current` map, which
+   * would wipe other tenants' state too. */
+  clearCurrentSandbox(tenant: string): void {
+    const cur = this.read();
+    if (!cur.current) return;
+    delete cur.current[tenant];
+    this.write(cur);
+  }
 }
