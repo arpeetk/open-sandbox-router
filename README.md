@@ -117,21 +117,24 @@ Then:
 osr providers                                   # list providers + capabilities
 osr plan --require runCode --strategy cost      # dry-run routing
 osr create --template python-3.12 --require runCode --strategy latency
-osr ls
-osr exec <id> echo hello
+osr ls                                           # * marks the current sandbox
+osr exec echo hello                             # no id needed — targets the current one
 osr --version
 ```
 
-By default `osr` talks to a running gateway (set `OSR_URL` if it's not on
-`http://localhost:8080`). **No gateway? Use `--local`** to embed the router in-process —
-state persists to `~/.osr/bindings.json`, so bindings survive across commands:
+No flags needed to pick a mode: the first command auto-detects whether a gateway is
+reachable (default `http://localhost:8080`, or `OSR_URL`) and remembers the result, so
+every later invocation just works with nothing to type. Prefer to set it explicitly
+once, or check what's active:
 
 ```bash
-osr --local providers
-osr --local create --require filesystem --strategy cost
-osr --local exec <id> echo hi           # a separate process reconnects via the saved binding
-osr --local rm <id>
+osr config set mode local     # or: gateway — persists to ~/.osr/config.json
+osr doctor                    # see resolved mode/credentials and per-provider status
 ```
+
+`osr create` makes the new sandbox "current," so `exec`/`rm`/`pause`/`resume`/`snapshot`
+can all drop the id — pass one explicitly any time to target a different sandbox instead,
+or switch which one is current with `osr use <id>`.
 
 During development you can also run it without installing: `pnpm cli -- providers`.
 
@@ -165,6 +168,10 @@ During development you can also run it without installing: `pnpm cli -- provider
   real one, so every provider and sandbox carries a `simulated: boolean` (`osr providers`
   / `osr ls` show a `[SIMULATED]` tag) — you can always tell whether you actually reached
   the vendor's API.
+- **Zero-friction CLI** — no mode flag to remember (auto-detects local vs. gateway once,
+  persists the choice — `osr config`), no id to retype (`osr create` sets the "current"
+  sandbox — `osr use`), and `osr doctor` for a one-command diagnosis of mode/credentials/
+  per-provider status.
 
 ## Configuration (gateway)
 

@@ -26,6 +26,7 @@ your code ever hard-coding a provider.
 13. [REST API (curl)](#13-rest-api-curl)
 14. [Error handling](#14-error-handling)
 15. [Configuration reference](#15-configuration-reference)
+    - [Persistent CLI config](#persistent-cli-config)
 16. [Recipes](#16-recipes)
 
 ---
@@ -479,49 +480,55 @@ creates on exit, including on failure. Prints a pass/fail count per assertion.
 
 **Option B — the `osr` CLI in local mode (no gateway):**
 
-`--local` embeds the router in-process and reads your `.env.local`, so you can drive real
-providers straight from the CLI. Bindings persist to `~/.osr/bindings.json`, so a
-`create` in one shell and an `exec` in another dispatch to the same sandbox.
+Set local mode once — no need to pass `--local` on every command after that — and drive
+real providers straight from the CLI. State persists to `~/.osr/`, so a `create` in one
+shell and an `exec` in another dispatch to the same sandbox, and `create` also sets the
+new sandbox as "current" so follow-ups don't need the id repeated either:
 
 ```bash
-pnpm cli:install     # once
+pnpm cli:install                # once
+osr config set mode local       # once — every command below needs no flag at all
 
 # Vercel
-VID=$(osr --local create --template node-20 --require filesystem --strategy pin:vercel | grep -oE 'sbx_[a-z0-9]+')
-osr --local exec "$VID" -- node --version
-osr --local rm "$VID"
+osr create --template node-20 --require filesystem --strategy pin:vercel
+osr exec -- node --version      # no id: targets the sandbox `create` just made current
+osr rm                          # ditto
 
 # Modal
-MID=$(osr --local create --template python-3.12 --require filesystem --strategy pin:modal | grep -oE 'sbx_[a-z0-9]+')
-osr --local exec "$MID" -- python --version
-osr --local rm "$MID"
+osr create --template python-3.12 --require filesystem --strategy pin:modal
+osr exec -- python --version
+osr rm
 
 # or let the router choose
-osr --local plan --require filesystem --strategy cost
-osr --local create --require filesystem --strategy cost
+osr plan --require filesystem --strategy cost
+osr create --require filesystem --strategy cost
 ```
 
-> **Cross-process session affinity requires a real provider.** Each `osr --local`
-> invocation is a fresh process. The binding (`sandbox -> provider`) persists to disk, so
-> a later `osr --local exec`/`rm` in a different shell correctly reconnects — but only if
-> the provider's *sandbox itself* lives outside that process too. Real providers (Modal,
-> Vercel with `OSR_MODAL_REAL=1` / `OSR_VERCEL_REAL=1`) satisfy this, since the sandbox
-> runs on the vendor's infrastructure. Simulated providers (the default for every
-> provider, including E2B and Kubernetes today) only exist in the memory of the process
-> that created them, so a separate `exec`/`rm` process will get `NotFound` — that's
-> expected, not a bug. If you want multi-command simulated testing, use the gateway
-> instead (`pnpm gateway`): its adapters live for the process's lifetime, so simulated
-> sandboxes persist across requests. When routing without a pin (e.g. `--strategy cost`),
-> pass `--order` or `--allow` to keep the result on a real provider — otherwise the
-> router may pick a simulated one.
+> **Cross-process session affinity requires a real provider.** Each `osr` invocation in
+> local mode is a fresh process. State persists to disk, so a later `exec`/`rm` in a
+> different shell correctly reconnects — but only if the provider's *sandbox itself*
+> lives outside that process too. Real providers (Modal, Vercel with `OSR_MODAL_REAL=1` /
+> `OSR_VERCEL_REAL=1`) satisfy this, since the sandbox runs on the vendor's
+> infrastructure. Simulated providers (the default for every provider, including E2B and
+> Kubernetes today) only exist in the memory of the process that created them, so a
+> separate `exec`/`rm` process will get `NotFound` — that's expected, not a bug (run
+> `osr doctor` to see it reported explicitly as a "stranded binding" rather than a bare
+> error). If you want multi-command simulated testing, use the gateway instead (`pnpm
+> gateway`): its adapters live for the process's lifetime, so simulated sandboxes persist
+> across requests. When routing without a pin (e.g. `--strategy cost`), pass `--order` or
+> `--allow` to keep the result on a real provider — otherwise the router may pick a
+> simulated one.
 
 **Option C — the gateway + `osr` CLI (client/server):**
 
 ```bash
 set -a; source .env.local; set +a          # export creds into the gateway
 OSR_PROVIDERS=modal,vercel pnpm gateway     # terminal 1
-osr providers                               # terminal 2 (no --local -> uses the gateway)
-osr create --template node-20 --require filesystem --strategy pin:vercel
+
+# terminal 2 — `--gateway` forces this mode explicitly, overriding any `config set mode
+# local` from earlier examples (a flag always wins over the persisted config)
+osr --gateway providers
+osr --gateway create --template node-20 --require filesystem --strategy pin:vercel
 ```
 
 > Note: `runCode` (stateful interpreter) is E2B-only — with Modal/Vercel, require
@@ -540,33 +547,43 @@ osr --version
 
 (For quick dev without installing, `pnpm cli -- <command>` still works.)
 
+No mode flag is required — the first invocation auto-detects whether a gateway is
+reachable and persists the result, so nothing needs to be typed on later commands. `osr
+create` also sets the new sandbox as **current**, so `[id]` below can be omitted almost
+everywhere and defaults to it; pass one explicitly any time to target something else.
+
 | Command | Description |
 |---|---|
-| `providers` | List providers + isolation + cold-start + capabilities |
+| `providers` | List providers + isolation + cold-start + capabilities + live/simulated |
 | `plan [flags]` | Dry-run routing; prints candidates + exclusions |
-| `create [flags]` | Create a sandbox; prints id, provider, and failover path |
-| `ls` | List sandboxes |
-| `exec <id> <cmd...>` | Run a command and stream output (`--` only needed if `<cmd>` itself has a `--flag`) |
-| `rm <id>` | Destroy a sandbox |
-| `pause <id>` / `resume <id>` | Pause/resume (provider-dependent) |
-| `snapshot <id>` | Take a provider-native snapshot; prints `<provider>:<snapshotId>` |
+| `create [flags]` | Create a sandbox (becomes current); prints id, provider, failover path |
+| `ls` | List sandboxes (`*` marks the current one) |
+| `use [id]` | Set (or show) the current sandbox for the commands below |
+| `exec [id] <cmd...>` | Run a command (`--` only needed if `<cmd>` has a `--flag`, or to target the current sandbox with no id at all: `osr exec -- ls`) |
+| `rm [id]` | Destroy a sandbox; clears it as current if it was |
+| `pause [id]` / `resume [id]` | Pause/resume (provider-dependent) |
+| `snapshot [id]` | Take a provider-native snapshot; prints `<provider>:<snapshotId>` |
+| `config set/get/unset <key>` | Persist default `mode`/`url`/`tenant` — see §15 |
+| `doctor` | Diagnose resolved mode, credentials, and per-provider live/simulated status |
 
-Flags: `--template`, `--name <n>` (get-or-create by stable name), `--require <cap>`
-(repeatable), `--prefer <cap>` (repeatable), `--strategy <s>`, `--region <r>`,
-`--isolation <lvl>`, `--max-cost <usd>`, `--order <provider>` (repeatable), `--vcpu`,
-`--memory`, `--from-snapshot <provider>:<snapshotId>` (restore), `--url`, `--tenant`.
+Flags: `--local`/`--gateway` (force a mode for this call only), `--template`, `--name <n>`
+(get-or-create by stable name), `--require <cap>` (repeatable), `--prefer <cap>`
+(repeatable), `--strategy <s>`, `--region <r>`, `--isolation <lvl>`, `--max-cost <usd>`,
+`--order <provider>` (repeatable), `--vcpu`, `--memory`, `--from-snapshot
+<provider>:<snapshotId>` (restore), `--url`, `--tenant`. An unrecognized `--flag` prints a
+"did you mean" suggestion to stderr rather than silently doing nothing or failing.
 
 ```bash
 osr create --name my-workspace --template node-20   # get-or-create; safe to run repeatedly
-osr snapshot <id>                                    # -> "modal:im-01K..."
-osr create --from-snapshot modal:im-01K...           # restore into a new sandbox
-osr pause <id>   # provider-dependent; throws CapabilityUnsupported otherwise
-osr resume <id>
+osr snapshot                                         # -> "modal:im-01K..." (current sandbox)
+osr create --from-snapshot modal:im-01K...           # restore into a new sandbox (becomes current)
+osr pause    # provider-dependent; throws CapabilityUnsupported otherwise
+osr resume
 ```
 
 ```bash
-OSR_URL=http://localhost:8080 osr plan --require gpu --strategy cost
-OSR_URL=http://localhost:8080 osr create --template python-3.12 --require runCode
+osr --gateway plan --require gpu --strategy cost --url http://localhost:8080
+osr --gateway create --template python-3.12 --require runCode --url http://localhost:8080
 ```
 
 ## 12. Python SDK
@@ -670,8 +687,22 @@ Gateway environment variables:
 | `OSR_REAP_INTERVAL_MS` | `60000` | How often the TTL reaper sweeps for expired sandboxes; `0` disables it |
 | `OSR_URL` | `http://localhost:8080` | Base URL used by the CLI |
 | `OSR_TENANT` | `default` | Tenant used by the CLI |
-| `OSR_LOCAL` | unset | `1` makes the CLI default to `--local` mode |
-| `OSR_STATE_DIR` | `~/.osr` | Where `--local` mode persists its binding store |
+| `OSR_LOCAL` | unset | `1` makes the CLI default to local mode |
+| `OSR_MODE` | unset | `local` or `gateway` — same effect as `OSR_LOCAL=1`, plus lets you force gateway mode via env too |
+| `OSR_STATE_DIR` | `~/.osr` | Where local mode persists its binding store *and* CLI config |
+
+### Persistent CLI config
+
+`osr config set/get/unset <mode|url|tenant> [value]` persists to `~/.osr/config.json` (or
+`$OSR_STATE_DIR/config.json`) — the only reason `--local`/`--url`/`--tenant` used to need
+repeating on every command. Resolution order for all three: **CLI flag > env var >
+config file > built-in default**. With nothing set at any level, the very first `osr`
+invocation auto-detects local vs. gateway (a fast, short-timeout reachability check
+against the resolved url) and writes the result to config immediately — so the check
+never runs twice, and a later `osr config get mode` shows `"modeSource": "auto"` to make
+clear it was guessed rather than chosen. `osr config unset mode` clears the guess and
+re-enables auto-detection on the next command. `osr doctor` surfaces all of this in one
+place — see [§11](#11-cli-reference).
 
 ## 16. Recipes
 
